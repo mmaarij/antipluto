@@ -1,0 +1,1343 @@
+\documentclass[journal]{IEEEtran}
+
+% Required Packages
+\usepackage[utf8]{inputenc}
+\usepackage[T1]{fontenc}
+\usepackage{amsmath,amssymb,amsfonts}
+\usepackage{algorithmic}
+\usepackage{algorithm}
+\usepackage{graphicx}
+\usepackage{textcomp}
+\usepackage{xcolor}
+\usepackage{booktabs}
+\usepackage{tabularx}
+\usepackage{array}
+\usepackage{multirow}
+\usepackage{cite}
+\usepackage{url}
+\usepackage{microtype}
+\usepackage{subcaption}
+\usepackage{balance}
+\usepackage{hyperref}
+
+\hypersetup{
+    colorlinks=true,
+    linkcolor=black,
+    citecolor=black,
+    urlcolor=blue
+}
+
+\begin{document}
+
+\title{Anti-PLUTO: Anti-Phishing Lexical Utilities and Threat Observation\\
+\large A Unified Extensible Framework for Email Dataset Preprocessing, Masking, Synthetic Generation \& Semantic-Stylometric Phishing Classification with Benchmarking}
+
+\author{Muhammad~Maarij~\textit{and}~Brian~McGinley%
+\thanks{M. Maarij is a postgraduate student with the Department of Computer Science \& Applied Physics, Atlantic Technological University, Galway, Ireland (e-mail: G00486660@atu.ie). This research was submitted in partial fulfilment of the requirements for the degree of Master of Science in Computing at Atlantic Technological University, Galway.}%
+\thanks{B. McGinley is a Lecturer with the Department of Computer Science \& Applied Physics, Atlantic Technological University, Galway, Ireland (e-mail: Brian.McGinley@atu.ie). He supervised this research.}%
+}
+
+\markboth{MSc Computing Thesis, Atlantic Technological University, Galway, Ireland, September~2026}%
+{Maarij \textit{et al.}: Anti-PLUTO: Anti-Phishing Lexical Utilities and Threat Observation}
+
+\maketitle
+
+\begin{abstract}
+The rapid proliferation of Large Language Models (LLMs) enables threat actors to generate contextually fluent spear-phishing emails that evade traditional rule-based filters. To study and address this emerging threat, this paper presents \textbf{Anti-PLUTO}, an applied research framework for email preprocessing, PII masking, synthetic generation, and semantic-stylometric phishing detection. Anti-PLUTO constructs a dual-branch representation uniting a $100{,}000$-dimensional stylometric space (capturing sub-word and character distributions while preserving casing and punctuation) with a $768$-dimensional contextual semantic manifold from fine-tuned DeBERTa-v3. Evaluated across a curated corpus of $64{,}000$ emails spanning four operational cohorts (Human Benign, Human Phishing, LLM Benign, LLM Phishing), Anti-PLUTO achieves $98.42\%$ accuracy, $98.94\%$ overall phishing recall ($99.38\%$ on synthetic threats), $99.34\%$ within-corpus AI provenance attribution, and a benign false positive rate of $0.81\%$. In offline content-only evaluations on $6{,}400$ unseen MIME messages where external network telemetry is unavailable, rule-based heuristics in Apache SpamAssassin and Rspamd failed to trigger on fluent synthetic text ($<1.2\%$ recall), whereas Anti-PLUTO intercepted $99.38\%$ of generative attacks with an incremental classifier throughput of $7{,}497\text{ msgs/s}$ on pre-computed feature vectors ($62.2\text{ ms}$ full pipeline on GPU). However, an independent zero-day evaluation on $2{,}000$ contemporary emails synthesized by unseen LLMs (Alibaba Qwen-3 and DeepSeek-V4) reveals a substantial generalization bottleneck under model and prompt distribution shift: while retaining $93.95\%$ synthetic provenance sensitivity and intercepting $95.63\%$ of actionable linked attacks, overall phishing recall drops to $67.80\%$ ($46.37\%$ on linkless conversational fraud), highlighting sensitivity to training prompt diversity and generation scale. Finally, we provide descriptive threshold sensitivity scenarios and discuss mitigation strategies for temporal concept drift on automated transactional communications.
+\end{abstract}
+
+\begin{IEEEkeywords}
+Phishing Detection, Large Language Models, Generative Artificial Intelligence, Stylometry, Transformer Embeddings, DeBERTa, XGBoost, Temporal Concept Drift, Email Security.
+\end{IEEEkeywords}
+
+\IEEEpeerreviewmaketitle
+
+\section{Introduction}
+\IEEEPARstart{S}{ocial} engineering via email remains the predominant entry vector for sophisticated cyberattacks. Industry measurements confirm the scale of the threat: $71\%$ of surveyed organizations experienced at least one successful phishing attack in 2023, with social engineering identified as a component of nearly every email-borne threat campaign \cite{proofpoint2024har, salloum2022, gupta2023chatgpt}. For over two decades, defensive email security has operated under a fundamental syntactic premise: malicious communications could be reliably intercepted by detecting superficial lexical and orthographic flaws. Attackers historically lacked the organizational domain knowledge, linguistic fluency, or manual bandwidth to craft grammatical and coherent text at scale. Consequently, legacy Secure Email Gateways (SEGs), such as Apache SpamAssassin \cite{spamassassin2004} and Rspamd \cite{stakhov2020rspamd}, relied heavily on static regular expression rules, Bayesian keyword weighting, and external network telemetry (such as DNS-based Blackhole Lists [DNSBL] and Sender Policy Framework [SPF] authentication) to identify suspicious incoming mail.
+
+The emergence of modern Large Language Models (LLMs), including OpenAI's GPT-4 \cite{openai2023gpt4}, Anthropic's Claude 3.5 \cite{anthropic2024claude}, Google's Gemini \cite{gemini2023team}, and specialized uncensored cybercrime variants such as WormGPT and FraudGPT \cite{afane2024, roy2024}, has altered this defensive balance. Generative AI allows threat actors to scale contextualized spear-phishing campaigns that emulate legitimate corporate correspondence with grammatical fluency, appropriate tone, and realistic urgency cues \cite{hazell2023large, krishna2023}. Concurrently, benign enterprise workers increasingly deploy LLM-powered writing assistants to draft, summarize, and polish routine internal communications. As a consequence, email filters face a complex multi-class challenge: they must differentiate not only between benign and malicious human text, but also distinguish between legitimate AI-assisted corporate communications and adversarial AI-synthesized social engineering attacks.
+
+
+When evaluated against synthetic LLM phishing under controlled offline experimental conditions where routing headers are standardized and network reputations are neutral, traditional heuristic rules exhibit limited sensitivity to pure text payloads. Because generative text contains no misspelled keywords, clumsy syntax, or malformed HTML formatting, static rule-based filters score malicious emails as benign ham. In our offline evaluations, static heuristic rules in established engines detected less than $1.2\%$ of generative attacks under zero-hour, reputation-neutral conditions, demonstrating that pure syntactic heuristics cannot reliably flag generative text in isolation.
+
+To address this challenge, this paper introduces \textbf{Anti-PLUTO} (\textbf{Anti-P}hishing \textbf{L}exical \textbf{U}tilities and \textbf{T}hreat \textbf{O}bservation), a deployment-oriented research framework intended for release, supporting dataset preprocessing, PII masking, synthetic generation, and dual-branch semantic-stylometric phishing detection. Anti-PLUTO addresses the limitations of single-channel filters by constructing a \textbf{dual-branch feature space}:
+\begin{enumerate}
+    \item \textbf{A High-Dimensional Stylometric Branch ($100,000$ dimensions):} A joint word- and character-level $n$-gram Term Frequency-Inverse Document Frequency (TF-IDF) representation. In direct contrast to standard NLP pipelines, our stylometric branch strictly preserves functional stop-words, capitalization patterns, and punctuation marks, isolating the subtle, subconscious stylistic fingerprints and probabilistic regularities that distinguish human writing habits from auto-regressive token sampling distributions.
+    \item \textbf{A Deep Contextual Semantic Branch ($768$ dimensions):} A dense continuous vector manifold generated by fine-tuning DeBERTa-v3-small (Decoding-enhanced BERT with Disentangled Attention) \cite{he2023debertav3} over a multi-cohort objective, extracting contextual intent, emotional manipulation vectors, and social engineering semantics from the special \texttt{[CLS]} representation.
+\end{enumerate}
+
+By concatenating these complementary representations into a $100,768$-dimensional dual-branch feature vector, Anti-PLUTO evaluates fusion classifier heads (XGBoost, Random Forest, Multi-Layer Perceptrons, and 1D-CNNs) that achieve high classification accuracy. To support practical evaluation, Anti-PLUTO integrates an RFC 5322 MIME ingestion parser, automated Named Entity Recognition (NER) token masking, operational ROC threshold tuning, and an asynchronous REST API server supporting classifier inference on pre-computed feature vectors at up to $7{,}497$ messages per second, or $16.1$ messages per second for the full pipeline on a local GPU.
+
+\subsection{Research Questions and Hypotheses}
+This investigation is governed by two formal empirical research questions ($RQ$) and testable hypotheses ($H$):
+\begin{itemize}
+    \item \textbf{$\mathbf{RQ_1}$:} \emph{To what extent does a dual-branch fusion of high-dimensional stylometrics and deep contextual semantics outperform traditional rule-based filtering engines in intercepting LLM-generated phishing emails while bounding false positives on legitimate enterprise communications?}
+    \item \textbf{$\mathbf{H_1}$ (Phishing Detection Efficacy):} A dual-branch feature fusion architecture combining $100,000$-d stylometrics with $768$-d DeBERTa-v3 embeddings will detect synthetic LLM phishing with a recall exceeding $98.0\%$ and maintain a Benign False Positive Rate (FPR) below $1.0\%$ under in-distribution evaluations, whereas static heuristic filters (SpamAssassin, Rspamd) will experience bypass rates exceeding $90.0\%$ under content-only zero-hour conditions where external network telemetry is unavailable.
+    \item \textbf{$\mathbf{RQ_2}$:} \emph{Can joint stylometric and semantic representations accurately differentiate between human-authored text and LLM-synthesized prose across both benign and malicious email cohorts?}
+    \item \textbf{$\mathbf{H_2}$ (Provenance Attribution Efficacy):} The statistical and structural regularity of autoregressive language models leaves detectable distributional artifacts in lexical diversity and subword transition probabilities that allow a supervised classifier to attribute text provenance (Human vs. LLM) within the evaluated multi-era corpus.
+\end{itemize}
+
+\subsection{Key Contributions}
+The primary scientific, methodological, and engineering contributions of this work are summarized as follows:
+\begin{enumerate}
+    \item \textbf{Unified 4-Cohort Dataset Curation \& Synthetic Generation:} We construct a balanced, schema-standardized corpus of $64,000$ emails partitioned across four operational cohorts: Human Benign (HB), Human Phishing (HP), LLM Benign (LB), and LLM Phishing (LP). We design dedicated system and user prompts to synthesize corporate-aligned benign communications and scenario-faithful social engineering attacks via commercial LLMs, adhering strictly to the MeAJOR schema \cite{meajor2025corpus}.
+    \item \textbf{Privacy-Preserving Lexical Processing Pipeline:} We implement a preprocessing pipeline featuring recursive RFC 5322 MIME extraction, HTML parsing, thread boundary slicing (removing historic reply and forward artifacts), zero-width Unicode uncloaking, and a two-stage spaCy NER and regular expression PII masking engine that sanitizes sensitive identifiers (URLs, IPs, email addresses, names, organizations) into deterministic tokens, designed to reduce target leakage.
+    \item \textbf{Dual-Branch Feature Fusion Architecture and Critical Ablation:} We formalize, implement, and evaluate the Anti-PLUTO dual-branch architecture. Through exhaustive ablation, sample-level error correlation, and threshold sweeps, we demonstrate that while combining $100,000$-d stylometrics with $768$-d DeBERTa-v3 embeddings achieves $98.42\%$ accuracy, deep contextual embeddings drive most of the predictive performance ($101$ vs. $257$ errors). We show that high-dimensional stylometry acts as a localized boundary regularizer whose marginal false-positive reduction can be matched by a minor threshold adjustment ($\Delta \tau = +0.04$) on semantics alone, providing valuable design and latency guidance for production gateways.
+    \item \textbf{Comprehensive Multi-Classifier Benchmark:} We evaluate four distinct machine learning paradigms: Gradient Boosted Trees (XGBoost), Bagged Trees (Random Forest), Deep Fully Connected Networks (MLP), and Spatial Convolutions (1D-CNN). We show that the concatenated feature space exhibits consistent geometric separability across all paradigms (an accuracy spread of $0.16$ percentage points), while identifying XGBoost as a practical configuration balancing latency, memory footprint, and detection performance.
+
+    \item \textbf{Empirical Baselines Comparative Study:} We conduct an empirical benchmark against Apache SpamAssassin and Rspamd on $6,400$ unseen test emails wrapped in RFC 5322 MIME envelopes under an offline content-only protocol. We evaluate static text heuristics when external DNSBL and IP reputation feeds are unavailable ($0.00\%$ and $0.12\%$ catch rates on synthetic attacks), and measure an incremental classifier throughput of $7{,}497\text{ msgs/s}$ for Anti-PLUTO on pre-computed feature vectors ($62.2\text{ ms}$ for the full pipeline on GPU). Additionally, we evaluate provenance detection against an in-domain classical supervised baseline (Logistic Regression) and a zero-shot GPT-2-era detector, analyzing their relative efficacy and failure modes.
+    \item \textbf{Production Serving and Operational Analysis:} We deliver a FastAPI inference service with non-blocking ASGI threadpool dispatching and ONNX model export. In response to our ablation findings, the framework supports selectable representation modes (Semantic-Only, Stylometric-Only, and Dual-Branch Fusion) to suit environments with different hardware and latency requirements. Furthermore, we analyze Out-of-Distribution (OOD) temporal concept drift on modern transactional emails (e.g., OTP codes and automated receipts) and discuss practical mitigations including active learning and tenant-specific calibration.
+\end{enumerate}
+
+
+
+\subsection{Paper Organization}
+The remainder of this paper is structured as follows: Section~\ref{sec:related_work} reviews foundational and contemporary literature across email security, stylometry, and LLM threats. Section~\ref{sec:threat_model} formalizes the threat model, classification cohorts, and cost-sensitive optimization criteria. Section~\ref{sec:architecture} details the Anti-PLUTO architectural pipeline, preprocessing cleaners, and dual-branch feature extractors. Section~\ref{sec:dataset} describes the dataset curation, synthetic generation prompting, and split protocol. Section~\ref{sec:experiments} presents the experimental setup, hardware protocols, and evaluation metrics. Section~\ref{sec:results} provides an exhaustive empirical analysis across all four classifier heads, operational threshold ladders, and legacy baseline benchmarks. Section~\ref{sec:serving} outlines the production REST API and runtime telemetry. Section~\ref{sec:discussion} delivers an in-depth discussion on temporal concept drift, modern transactional false positives, generation infrastructure constraints, and defense-in-depth integration. Finally, Section~\ref{sec:conclusion} concludes the paper and forecasts future research directions.
+
+% ==============================================================================
+% SECTION II: RELATED WORK
+% ==============================================================================
+\section{Related Work}
+\label{sec:related_work}
+
+\subsection{Traditional Heuristic and Rule-Based Email Security}
+Email filtering systems have historically deployed a hybrid composition of network-level reputation checks and static content heuristics \cite{salloum2021}. Apache SpamAssassin \cite{spamassassin2004} pioneered rule-based scoring, combining tens of thousands of regular expressions with a genetic-algorithm-tuned Bayesian classifier. Rules target structural anomalies, such as mismatched MIME boundaries, excessive capitalization, presence of known spam keywords, and obfuscated URLs. Rspamd \cite{stakhov2020rspamd} refined this model by migrating the architecture to an event-driven C framework, integrating dynamic Lua scripting, fuzzy hashing, and neural network rescoring.
+
+While effective against mass commercial spam and opportunistic spam-traps, these tools depend heavily on external network infrastructure: Real-time Blackhole Lists (DNSBL), URI Blacklists (SURBL), and sender authentication protocols: Sender Policy Framework (SPF, RFC 7208) \cite{kitterman2014spf}, DomainKeys Identified Mail (DKIM, RFC 6376) \cite{crocker2011dkim}, and Domain-based Message Authentication, Reporting, and Conformance (DMARC, RFC 7489) \cite{kucherawy2015dmarc}. However, in targeted spear-phishing scenarios where attackers compromise legitimate corporate accounts (lateral phishing) or register newly established domains that exhibit zero historical DNSBL reputation, network-level filters provide negligible defensive utility \cite{bethany2025}. Industry measurements confirm the scale of the problem: $71\%$ of surveyed organizations experienced at least one successful phishing attack in 2023, with social engineering identified as a component of nearly every email-borne threat campaign \cite{proofpoint2024har}. Consequently, the inspection burden shifts entirely to content analysis, where static heuristic rules fail against generative natural language.
+
+\subsection{Machine Learning and Transformer NLP in Phishing Detection}
+The application of machine learning to email security gained substantial traction with classical classifiers, including Naive Bayes, Support Vector Machines (SVM), and Random Forests \cite{pedregosa2011scikit, salloum2022}. Early feature engineering focused on structural metadata: link counts, attachment types, spelling error rates, and lexical frequency bags. The advent of deep learning introduced Recurrent Neural Networks (RNNs) and Convolutional Neural Networks (CNNs) to model sequential dependencies in email text \cite{roumeliotis2024}.
+
+The emergence of pre-trained transformer architectures, particularly BERT \cite{devlin2019bert} and RoBERTa \cite{liu2019roberta}, significantly advanced natural language security. By leveraging bidirectional self-attention \cite{vaswani2017attention}, transformers construct rich contextual embeddings that capture subtle semantic cues and manipulative intent. He et al. introduced DeBERTa \cite{he2021deberta} and DeBERTa-v3 \cite{he2023debertav3}, which enhanced attention mechanisms via disentangled representations (encoding token content and relative position on separate vectors) and replaced masked language modeling with an ELECTRA-style replaced token detection generator-discriminator objective. DeBERTa-v3 significantly outperforms RoBERTa on benchmark NLP tasks, making it an effective backbone for modeling the semantics of social engineering attacks.
+
+\subsection{Generative AI and Large Language Model Threat Vectors}
+The widespread availability of generative AI has lowered the technical barrier to executing spear-phishing attacks \cite{hazell2023large, roy2024}. Prior to 2023, automated phishing generation was constrained to crude Markov chains or template-substitution scripts that produced unnatural phrasing. Modern commercial LLMs (such as GPT-4 \cite{openai2023gpt4} and Claude 3.5 \cite{anthropic2024claude}) comprehend complex contextual instructions, mimic specific professional vernaculars, and synthesize coherent multi-paragraph emails tailored to specific organizational victims \cite{afane2024, chataut2024}.
+
+
+Furthermore, research by Roy et al. \cite{roy2024} and Ferrell et al. \cite{ferrell2025} has demonstrated that commercial safety guardrails are easily bypassed via indirect prompt injection, semantic roleplay, or hypothetical cybersecurity evaluation framing. On the dark web, specialized unaligned LLMs (e.g., FraudGPT, WormGPT) are actively commercialized to automate the end-to-end generation of malware loaders and spear-phishing campaigns \cite{gupta2023chatgpt}. Recent studies by Bethany et al. \cite{bethany2025} and Han et al. \cite{han2025} confirmed that human targets fall victim to LLM-generated phishing at rates equal to or exceeding human-authored phishing, while traditional filters exhibit severe degradation.
+
+\subsection{Stylometry and Authorship Discrimination}
+Stylometry, the statistical study of linguistic style and writing habits, has long been applied to forensic linguistics and authorship verification \cite{stamatatos2009survey, abbasi2008writeprints}. Fundamental stylometric markers include lexical richness metrics (Type-Token Ratio, Yule's Characteristic $K$), syntactic complexity measures, punctuation frequencies, and character $n$-gram distributions. Unlike topic-focused bag-of-words models, stylometric analysis deliberately prioritizes functional syntactic tokens (articles, prepositions, auxiliary verbs) that reflect subconscious cognitive writing patterns.
+
+Acharya and Sharma \cite{acharya2025} and Brissett and Wall \cite{brissett2025} explored stylometric techniques to differentiate between human writers and synthetic generators. Autoregressive language models generate text by sampling from predicted probability distributions over fixed vocabularies. Because decoding algorithms (such as nucleus sampling or top-$k$ filtering) prioritize high-probability, low-entropy token sequences, LLM-synthesized prose exhibits unnatural structural smoothness, uniform sentence lengths, and constrained vocabulary distributions compared to human correspondence. Anti-PLUTO exploits these mathematical properties by integrating a $100,000$-dimensional stylometric space directly alongside dense semantic representations.
+
+\subsection{Target Leakage and Privacy-Preserving NLP in Cybersecurity}
+A persistent challenge in historical email classification literature is \textbf{target data leakage} \cite{pendlebury2019tesseract}. Datasets frequently incorporate specific organizational keywords, sender names, internal server hostnames, or temporal tokens (e.g., ``Enron'', employee names in the Enron corpus \cite{klimt2004enron}) that allow naive classifiers to achieve deceptively high testing accuracy by memorizing corpus-specific entities rather than learning generalized social engineering structures. When deployed on unseen corporate domains, such overfitted models experience immediate failure.
+
+To address this challenge, Al-Subaiey et al. introduced the MeAJOR corpus \cite{meajor2025corpus}, establishing standard guidelines for Named Entity Recognition (NER) anonymization in email security research. Following this paradigm, Anti-PLUTO enforces strict, mandatory PII masking across all training and serving pipelines. By mapping personal names, organizations, URLs, email addresses, and IP blocks to deterministic canonical tokens (\texttt{[NAME]}, \texttt{[ORG]}, \texttt{[URL]}, \texttt{[EMAIL\_ADDRESS]}, \texttt{[IP\_ADDRESS]}), Anti-PLUTO is designed to ensure that models extract general stylometric rhythms and semantic intent rather than superficial entity correlations.
+
+% ==============================================================================
+% SECTION III: THREAT MODEL & PROBLEM FORMULATION
+% ==============================================================================
+\section{Threat Model and Problem Formulation}
+\label{sec:threat_model}
+
+\subsection{Threat Model and Attacker Capabilities}
+We define an enterprise email environment where a threat actor aims to bypass perimeter security filters to deliver a deceptive payload to an organizational employee. We define three distinct threat tiers:
+\begin{enumerate}
+    \item \textbf{Tier 1: Human-Authored Phishing:} The attacker manually crafts phishing emails based on historical templates, generic urgency cues, or credential harvesting scripts. These emails may contain grammatical flaws, idiosyncratic punctuation, and detectable social engineering heuristics.
+    \item \textbf{Tier 2: AI-Assisted Phishing:} The attacker utilizes commercial or open-source LLMs to rewrite, correct, and optimize human drafts, eliminating syntactic errors, standardizing business vernacular, and modulating tone to match corporate communication standards.
+    \item \textbf{Tier 3: Autonomous Generative Spear-Phishing:} The attacker employs advanced LLMs equipped with target organization profiles (scraped from public websites or LinkedIn) to synthesize targeted, specific social engineering attacks exhibiting natural coherence, contextual urgency, and realistic transactional contexts.
+\end{enumerate}
+
+
+\textbf{Defensive Objective:} The defensive system must process incoming raw email payloads in real-time, determine whether the communication constitutes a phishing attack regardless of authorial origin (Tier 1, 2, or 3), attribute whether the text exhibits synthetic provenance, and maintain a rigorous bound on false alarms on legitimate human and AI-assisted communications.
+
+\subsection{Mathematical Problem Formulation}
+Let an incoming raw email message be denoted as $M$. After passing through the ingestion, extraction, and sanitization pipeline, the message is transformed into a clean, canonical text string $x \in \mathcal{X}$. The classification task is formulated across four mutually exclusive, collectively exhaustive operational cohorts:
+\begin{equation}
+    \mathcal{Y} = \{0: \text{HB}, 1: \text{HP}, 2: \text{LB}, 3: \text{LP}\}
+\end{equation}
+where:
+\begin{itemize}
+    \item \textbf{HB (Class 0 - Human Benign):} Legitimate, human-authored corporate correspondence (e.g., internal scheduling, technical discussions, project updates).
+    \item \textbf{HP (Class 1 - Human Phishing):} Malicious, human-authored attacks (e.g., credential harvesting, 419 advance-fee fraud, urgent account suspension notices) from historical datasets (see Section~\ref{sec:dataset} for operational composition).
+    \item \textbf{LB (Class 2 - LLM Benign):} Legitimate corporate communications written or polished by generative writing assistants.
+    \item \textbf{LP (Class 3 - LLM Phishing):} Malicious communications synthesized or polished by generative AI to execute social engineering.
+\end{itemize}
+
+The multiclass model outputs a parameterized conditional probability distribution over the four cohorts:
+\begin{equation}
+\begin{aligned}
+    \mathbf{p}(x) &= [p_0(x), p_1(x), p_2(x), p_3(x)] \in [0, 1]^4 \\
+    &\text{subject to } \sum_{k=0}^3 p_k(x) = 1
+\end{aligned}
+\end{equation}
+
+\subsection{Binary Projections and Decision Functions}
+From the 4-cohort probability distribution, we derive two crucial operational functions:
+
+\subsubsection{Binary Phishing Detection}
+The total probability that an email constitutes a phishing threat is the sum of human and synthetic phishing probabilities:
+\begin{equation}
+    P_{\text{phish}}(x) = p_1(x) + p_3(x) = p_{\text{HP}}(x) + p_{\text{LP}}(x)
+\end{equation}
+
+Given an operational decision threshold $\tau \in [0, 1]$, the binary phishing classification function $f_{\tau}(x)$ is defined as:
+\begin{equation}
+    f_{\tau}(x) = \begin{cases}
+        1 \text{ (Phishing)}, & \text{if } P_{\text{phish}}(x) \ge \tau \\
+        0 \text{ (Benign)},   & \text{if } P_{\text{phish}}(x) < \tau
+    \end{cases}
+\end{equation}
+
+\subsubsection{Provenance Attribution}
+Independent of malicious intent, the aggregate AI provenance score that the text was generated or polished by an artificial intelligence model is given by:
+\begin{equation}
+    s_{\text{AI}}(x) = p_2(x) + p_3(x) = p_{\text{LB}}(x) + p_{\text{LP}}(x)
+\end{equation}
+The binary provenance attribution function $g_{\theta}(x)$ with threshold $\theta \in [0, 1]$ (typically $\theta = 0.50$) is defined as:
+\begin{equation}
+    g_{\theta}(x) = \begin{cases}
+        1 \text{ (LLM-Generated)}, & \text{if } s_{\text{AI}}(x) \ge \theta \\
+        0 \text{ (Human-Authored)}, & \text{if } s_{\text{AI}}(x) < \theta
+    \end{cases}
+\end{equation}
+
+\subsection{Asymmetric Enterprise Cost Optimization}
+\label{sec:cost_opt}
+In enterprise deployments, false positives and false negatives carry fundamentally asymmetric business costs. Let $C(\hat{y}, y)$ denote the operational cost of predicting class $\hat{y}$ when the true label is $y$:
+\begin{equation}
+\begin{aligned}
+    C(\text{Phish}, \text{Benign}) &= C_{\text{FP}} \\
+    C(\text{Benign}, \text{Phish}) &= C_{\text{FN}}
+\end{aligned}
+\end{equation}
+A false alarm ($C_{\text{FP}}$) disrupts executive communication, delays transactions, and induces severe security operations center (SOC) alert fatigue. A missed attack ($C_{\text{FN}}$) exposes the network to credential theft or ransomware. Therefore, the optimal operational threshold $\tau^*$ is selected not at the default symmetric cutoff ($\tau = 0.50$), but via constrained cost minimization on an independent validation set $\mathcal{D}_{\text{val}}$:
+\begin{equation}
+\label{eq:threshold_opt}
+\begin{aligned}
+    \tau^* = \arg\min_{\tau} & \sum_{i=1}^{|\mathcal{D}_{\text{val}}|} C\left(f_{\tau}(x_i), y_i\right) \\
+    \text{s.t.} \quad & \text{FPR}(\tau) \le \alpha_{\text{target}}
+\end{aligned}
+\end{equation}
+where $\alpha_{\text{target}}$ represents the maximum permissible false positive rate (e.g., $\le 0.5\%$).
+
+% ==============================================================================
+% SECTION IV: ANTI-PLUTO FRAMEWORK ARCHITECTURE
+% ==============================================================================
+\section{Anti-PLUTO Framework Architecture}
+\label{sec:architecture}
+
+The Anti-PLUTO system architecture is structured into three interconnected sub-systems: (1) the Real-World Ingestion and Lexical Processing Pipeline, (2) the Dual-Branch Feature Extraction Engine, and (3) the Extensible Classifier Fusion Heads. Fig.~\ref{fig:architecture_pipeline} illustrates the end-to-end data flow from raw message ingestion to operational classification.
+
+\begin{figure*}[!t]
+\centering
+\fbox{%
+\begin{minipage}{0.96\textwidth}
+\centering
+\vspace{0.2cm}
+\textbf{\large Anti-PLUTO End-to-End Ingestion, Feature Fusion, and Prediction Pipeline}\\[0.3cm]
+\small
+\fbox{\parbox{0.92\textwidth}{\centering \textbf{1. INCOMING MESSAGE INGESTION:} RFC 5322 MIME Parser / Multipart Decoders / Encoded-Word Headers}}\\[0.15cm]
+$\boldsymbol{\downarrow}$\\[0.15cm]
+\fbox{\parbox{0.92\textwidth}{\centering \textbf{2. MULTI-STAGE LEXICAL CLEANING PIPELINE:} HTML Stripper $\to$ Header Slicer $\to$ Unicode Normalizer $\to$ Two-Stage PII Masker}}\\[0.15cm]
+$\boldsymbol{\downarrow}$\\[0.15cm]
+\fbox{\parbox{0.92\textwidth}{\centering \textbf{3. CANONICAL FORMATTER:} \texttt{"Subject: [masked\_subj]. Body: [masked\_body]"}}}\\[0.15cm]
+% Split arrow row: a horizontal line with two downward arrows indicating the branch
+\begin{minipage}{0.47\textwidth}\centering $\boldsymbol{\downarrow}$\end{minipage}\hfill
+\begin{minipage}{0.47\textwidth}\centering $\boldsymbol{\downarrow}$\end{minipage}\\[0.1cm]
+\begin{minipage}{0.47\textwidth}
+\centering
+\fbox{\parbox{0.94\linewidth}{\centering \textbf{4a. STYLOMETRIC BRANCH ($\mathbb{R}^{100,000}$)}\\Word $n$-grams (1, 2) + Char $n$-grams (3, 5)\\Preserves Case, Punctuation, Stop-Words}}
+\end{minipage}\hfill
+\begin{minipage}{0.47\textwidth}
+\centering
+\fbox{\parbox{0.94\linewidth}{\centering \textbf{4b. SEMANTIC BRANCH ($\mathbb{R}^{768}$)}\\DeBERTa-v3-small Transformer Backbone\\ELECTRA Pre-trained + Disentangled Attention}}
+\end{minipage}\\[0.1cm]
+% Convergence arrow row: two downward arrows merging back to centre
+\begin{minipage}{0.47\textwidth}\centering $\boldsymbol{\downarrow}$\end{minipage}\hfill
+\begin{minipage}{0.47\textwidth}\centering $\boldsymbol{\downarrow}$\end{minipage}\\[0.15cm]
+\fbox{\parbox{0.92\textwidth}{\centering \textbf{5. DUAL-BRANCH FEATURE FUSION:} $\mathbf{x}_{\text{fused}} = [\mathbf{x}_{\text{stylo}} \mathbin{\Vert} \mathbf{x}_{\text{sem}}] \in \mathbb{R}^{100,768}$}}\\[0.15cm]
+$\boldsymbol{\downarrow}$\\[0.15cm]
+\fbox{\parbox{0.92\textwidth}{\centering \textbf{6. CLASSIFIER FUSION HEADS:} XGBoost / Random Forest / PyTorch MLP / PyTorch 1D-CNN}}\\[0.15cm]
+$\boldsymbol{\downarrow}$\\[0.15cm]
+\fbox{\parbox{0.92\textwidth}{\centering \textbf{7. OUTPUT TELEMETRY:} 4-Class Probabilities $\to$ Phishing Flag ($P_{\text{phish}} \ge \tau$) $\to$ Provenance Flag ($s_{\text{AI}} \ge 0.50$) $\to$ API Response}}\\[0.2cm]
+\end{minipage}%
+}
+\caption{Architectural overview of the Anti-PLUTO framework, demonstrating message ingestion, lexical cleaning, dual-branch stylometric and semantic feature extraction, feature concatenation, and downstream classification.}
+\label{fig:architecture_pipeline}
+\end{figure*}
+
+\subsection{Real-World Ingestion and Lexical Cleaning Pipeline}
+To ensure strict training-serving parity and eliminate out-of-distribution formatting anomalies, all incoming communications undergo an automated 5-stage cleaning sequence implemented in \texttt{antipluto.preprocessing}:
+
+\subsubsection{Stage 1: RFC 5322 MIME Extraction}
+The ingestion engine (\texttt{antipluto.api.parser}) ingests raw email byte streams adhering to RFC 5322 \cite{resnick2008rfc5322}. It leverages Python's modern \texttt{email.policy.default} policy to execute a recursive traversal across multipart/mixed and multipart/alternative structures. The parser decodes RFC 2047 encoded-word headers (handling UTF-8, ISO-8859-1, and Windows-1252 charsets), prioritizes text/plain payloads, and seamlessly falls back to text/html when plain text representations are omitted.
+
+\subsubsection{Stage 2: HTML Stripping and Whitespace Normalization}
+The \texttt{HTMLStripper} component identifies markup payloads via regular expressions targeting tag structures (\texttt{<html|body|div|table>}). It parses the Document Object Model using BeautifulSoup4 with the \texttt{lxml} parser, extracts raw hypertext, unwraps hidden anchor tags, and replaces block elements (\texttt{<p>}, \texttt{<br>}, \texttt{<div>}) with uniform newlines. It collapses erratic whitespace, carriage returns, and tabs while preserving sentence boundary punctuation.
+
+\subsubsection{Stage 3: Thread Boundary Slicing}
+In enterprise correspondence, emails routinely contain embedded historical reply chains and forwarded threads (e.g., \texttt{-----Original Message-----}, \texttt{On [Date] wrote:}). Retaining historic replies introduces severe noise and target leakage, as classifiers may mistakenly evaluate the historical conversation rather than the active payload. The \texttt{HeaderSlicer} component identifies common internationalized email boundary headers and slices the string, strictly retaining only the newly authored content.
+
+\subsubsection{Stage 4: Unicode Normalization and Homoglyph Uncloaking}
+Attackers frequently utilize Unicode homoglyphs (e.g., Cyrillic `a' [U+0430] replacing Latin `a' [U+0061]) and zero-width non-joiners (U+200B, U+200C, U+200D, U+FEFF) to disrupt tokenization and evade keyword filters. Anti-PLUTO applies Unicode NFKC (Compatibility Decomposition followed by Canonical Composition) normalization, strips invisible control characters, and maps confusables back to canonical Latin equivalents.
+
+\subsubsection{Stage 5: Two-Stage PII and Token Masking}
+To mitigate target leakage and promote feature invariance, the \texttt{PIIMasker} component executes a two-stage anonymization protocol following the hybrid NER + regex design established by Al-Subaiey et al.~\cite{alsubaiey2024spadr} and the MeAJOR corpus guidelines \cite{meajor2025corpus}. It is important to distinguish pre-generation sanitization from pre-classification masking: raw, unmasked historical seed text was sent to the Azure APIs during synthetic generation to ensure the LLMs had full contextual grounding. Masking was subsequently applied \emph{uniformly across all four completed cohorts} as a final preprocessing step before classifier training. Uniform masking reduces direct entity-identity and corpus-source leakage while preserving structural category information such as the presence of URLs or financial references.
+
+\textbf{Stage 5a: Deterministic Regex Tokenization.} Structured and semi-structured PII is intercepted first by a sequence of deterministic compiled regular expressions, applied in a strict declared order to prevent partial overlaps. Regex must execute before NER to avoid confusing the spaCy model with partially-formed bracket tokens. The full pattern inventory is documented in Table~\ref{tab:regex_patterns}.
+
+\begin{table}[!htbp]
+\caption{Stage 5a: Regex Pattern $\to$ Replacement Token Mapping (applied in declared order)}
+\label{tab:regex_patterns}
+\centering
+\resizebox{\columnwidth}{!}{%
+\begin{tabular}{l l p{4.5cm}}
+\toprule
+\textbf{Pattern} & \textbf{Token} & \textbf{Coverage} \\
+\midrule
+PGP signature/key blocks & \texttt{[PGP]} & \texttt{-----BEGIN PGP ...-----} signed message, signature, and key blocks; applied first to prevent PGP wrappers from confusing downstream patterns \\
+Unicode emoji & \texttt{[EMOJI]} & Unicode codepoints in emoticon, symbol, pictograph, dingbat, and variation-selector ranges (U+1F600--U+1FAFF, U+2600--U+27BF, U+FE00--U+FE0F) \\
+Email addresses & \texttt{[EMAIL\_ADDRESS]} & RFC-compliant \texttt{user@domain.tld}; applied before URL pass to prevent \texttt{mailto:} conflicts \\
+URLs (scheme-prefixed) & \texttt{[URL]} & \texttt{http://}, \texttt{https://}, \texttt{ftp://}, and \texttt{www.} URLs with trailing punctuation stripping \\
+Bare domain URLs & \texttt{[URL]} & Domain-only URLs without a scheme but with a mandatory path segment (e.g., \texttt{evil-corp.ru/verify}); constrained by TLD allowlist to avoid over-matching prose \\
+IPv4 addresses & \texttt{[IP\_ADDRESS]} & Dotted-quad notation (e.g., \texttt{192.168.1.1}) \\
+Windows/Unix file paths & \texttt{[FILE\_PATH]} & Absolute Windows paths (\texttt{C:\textbackslash Users\textbackslash ...}) and Unix paths (\texttt{/usr/local/bin/...}) \\
+Filenames with extension & \texttt{[FILE\_NAME]} & Files with recognized extensions (pdf, docx, xlsx, pptx, txt, csv, zip, rar, exe, py, js, json, yaml, log, etc.) \\
+Generic file references & \texttt{[FILE]} & Keyword-prefixed references: ``attached: foo'', ``file: bar'' \\
+Credit/debit card numbers & \texttt{[FINANCIAL\_INFO]} & 16-digit card numbers in groups of 4 with optional separators; applied before phone pattern \\
+IBAN bank account numbers & \texttt{[FINANCIAL\_INFO]} & 2-letter country code + 2 check digits + 11--30 alphanumerics \\
+Reference/order/ticket numbers & \texttt{[REFERENCE\_NUMBER]} & Keyword-prefixed (\texttt{Ref:}, \texttt{Order \#}, \texttt{Case ID:}), hash-prefixed (\texttt{\#ABC123}), and standalone hyphenated codes (e.g., \texttt{TKT-99887766}, \texttt{INV-2024-001}) \\
+Phone numbers & \texttt{[PHONE\_NUMBER]} & International (\texttt{+1-800-555-1234}), local (\texttt{(800) 555-1234}), and European formats \\
+@mention usernames & \texttt{[USERNAME]} & \texttt{@handle} tokens (Twitter/email-client style) \\
+Initials & \texttt{[INITIALS]} & Sequences of 2--5 uppercase letters each followed by a period (e.g., \texttt{J.R.R.}, \texttt{M.D.}) \\
+Decorative separator lines & \texttt{[SYMBOL]} & Lines consisting primarily of repeated punctuation (\texttt{----}, \texttt{====}, \texttt{****}, \texttt{$\sim\!\sim\!\sim$}) with length $\ge 4$ \\
+\bottomrule
+\end{tabular}%
+}
+\end{table}
+
+\textbf{Stage 5b: spaCy NER Entity Replacement.} After regex masking, a pretrained spaCy NER model (\texttt{en\_core\_web\_sm} or transformer-backed \texttt{en\_core\_web\_trf}) identifies remaining named entities in the partially-anonymized text. Running NER second ensures that bracket tokens already placed by the regex stage do not confuse the entity recognizer. Seventeen spaCy entity label types are mapped to six canonical replacement tokens via the \texttt{\_ENTITY\_MAP} lookup, as documented in Table~\ref{tab:ner_entities}.
+
+\begin{table}[!htbp]
+\caption{Stage 5b: spaCy NER Entity Label $\to$ Replacement Token Mapping}
+\label{tab:ner_entities}
+\centering
+\resizebox{\columnwidth}{!}{%
+\begin{tabular}{l l p{5cm}}
+\toprule
+\textbf{spaCy Entity Label(s)} & \textbf{Replacement Token} & \textbf{Entity Types Covered} \\
+\midrule
+\texttt{PERSON} & \texttt{[NAME]} & Person names in prose (e.g., ``John Smith''); note: spaCy's internal label is \texttt{PERSON}; the output token written to text is \texttt{[NAME]} \\
+\texttt{ORG}, \texttt{NORP} & \texttt{[ORGANIZATION]} & Companies, institutions; nationality/demonym adjectives (e.g., ``Canadian'', ``Iraqi'') \\
+\texttt{GPE}, \texttt{LOC}, \texttt{FAC} & \texttt{[ADDRESS]} & Countries, cities, geo-political entities, landmarks, facilities \\
+\texttt{DATE} & \texttt{[DATE]} & Absolute and relative dates \\
+\texttt{TIME} & \texttt{[TIME]} & Times of day \\
+\texttt{MONEY}, \texttt{QUANTITY} & \texttt{[FINANCIAL\_INFO]} & Monetary values, physical quantities \\
+\texttt{PRODUCT}, \texttt{WORK\_OF\_ART} & \texttt{[PRODUCT]} & Product names, software tools, titles of works (e.g., ``bash'', ``Excel'') \\
+\texttt{CARDINAL}, \texttt{ORDINAL}, \texttt{PERCENT}, \texttt{EVENT}, \texttt{LAW} & \texttt{[REFERENCE\_NUMBER]} & Numeric quantities, percentages, named events, legislative references \\
+\bottomrule
+\end{tabular}%
+}
+\end{table}
+
+
+\textbf{Stage 5c: Synthetic Prompt Token Normalization (Anti-Leakage Pass).} Two additional regex rules are embedded within the Stage 5b pattern list specifically to eliminate a class of discriminative leakage unique to LLM-generated cohorts. The generation prompts instruct models to write \texttt{[SENDER]} and \texttt{[RECEIVER]} as name placeholders when identities are unknown, and \texttt{[ACTION\_LINK]} as a phishing link placeholder. If these bracket tokens were allowed to persist into the training feature space, the classifier would trivially learn to associate them with LLM provenance (H\textsubscript{2}) rather than genuine stylometric structure, invalidating the evaluation. The normalization rules:
+\begin{align*}
+    \texttt{[SENDER]},\ \texttt{[RECEIVER]} &\longrightarrow \texttt{[NAME]} \\
+    \texttt{[ACTION\_LINK]} &\longrightarrow \texttt{[URL]}
+\end{align*}
+are applied as part of the regex sweep, \emph{before} NER, so that spaCy never observes these synthetic tokens. After normalization, an LLM email containing ``Dear [RECEIVER]'' and a human email containing ``Dear John Smith'' (where spaCy resolves ``John Smith'' $\to$ \texttt{[NAME]}) are indistinguishable at the token level. This is intentional: it forces the classifier to learn genuine authorial distributional invariants rather than shortcut on generation-artifact brackets.
+
+\textbf{Complete Anonymization Token Vocabulary.} The full set of $20$ output placeholder tokens produced by the Anti-PLUTO masking pipeline is:
+\begin{center}
+\small
+\texttt{[PGP]}, \texttt{[EMOJI]}, \texttt{[SYMBOL]}, \texttt{[NAME]}, \texttt{[USERNAME]}, \texttt{[INITIALS]},\\
+\texttt{[EMAIL\_ADDRESS]}, \texttt{[PHONE\_NUMBER]}, \texttt{[ADDRESS]}, \texttt{[ORGANIZATION]},\\
+\texttt{[URL]}, \texttt{[IP\_ADDRESS]}, \texttt{[FILE\_PATH]}, \texttt{[FILE\_NAME]}, \texttt{[FILE]},\\
+\texttt{[DATE]}, \texttt{[TIME]}, \texttt{[FINANCIAL\_INFO]}, \texttt{[PRODUCT]}, \texttt{[REFERENCE\_NUMBER]}
+\end{center}
+
+Finally, the sanitized subject and body are concatenated into a standardized input string:
+\begin{equation}
+\begin{aligned}
+    x = \; & \texttt{"Subject: "} \mathbin{\Vert} \text{masked\_subject} \\
+    & \mathbin{\Vert} \texttt{". Body: "} \mathbin{\Vert} \text{masked\_body}
+\end{aligned}
+\end{equation}
+
+\subsection{Dual-Branch Feature Extraction}
+
+\subsubsection{Stylometric Branch ($\mathbb{R}^{100,000}$)}
+The stylometric branch (\texttt{antipluto.classifier.stylometric}) captures lexical predictability, formatting cadence, and structural regularity. Traditional NLP feature extraction removes stop words, lowers casing, and stems words. In Anti-PLUTO, \textbf{we deliberately reverse these conventions}:
+\begin{itemize}
+    \item \textbf{Retention of Stop Words:} Stop words (e.g., ``the'', ``which'', ``furthermore'', ``inasmuch'') serve as fundamental function words in stylometric authorship verification \cite{stamatatos2009survey}, quantifying grammatical habits.
+    \item \textbf{Retention of Case and Punctuation:} Capitalization ratios (shouting markers in human phishing vs. uniform title-casing in AI text) and punctuation cadence (hyphenation, semicolon frequency) provide strong discriminative signals.
+\end{itemize}
+
+The stylometric feature vector $\mathbf{x}_{\text{stylo}} \in \mathbb{R}^{100,000}$ is constructed via two parallel sub-extractors:
+\begin{enumerate}
+    \item \textbf{Word-Level N-Grams ($\mathbb{R}^{50,000}$):} Captures short lexical phrasing and syntactic collocations over $n \in \{1, 2\}$, bounded by sublinear term frequency scaling:
+    \begin{equation}
+        \text{tf}_{\text{sub}}(t, d) = 1 + \log(\text{tf}(t, d)) \quad \text{for } \text{tf}(t, d) > 0
+    \end{equation}
+    \item \textbf{Character-Level N-Grams ($\mathbb{R}^{50,000}$):} Extracted across sliding sub-word windows $n \in \{3, 4, 5\}$. Character $n$-grams capture sub-lexical morphological structures, prefix/suffix patterns, and spelling regularity independent of word boundary tokenization.
+\end{enumerate}
+Both matrices are normalized under the Euclidean $\ell_2$-norm and concatenated horizontally:
+\begin{equation}
+    \mathbf{x}_{\text{stylo}} = [\mathbf{x}_{\text{word}} \mathbin{\Vert} \mathbf{x}_{\text{char}}] \in \mathbb{R}^{100,000}
+\end{equation}
+
+\subsubsection{Semantic Branch ($\mathbb{R}^{768}$)}
+The semantic feature extractor (\texttt{antipluto.classifier.semantic}) leverages DeBERTa-v3-small ($44\text{M}$ backbone parameters plus approximately $98\text{M}$ embedding parameters for a $128\text{K}$-token vocabulary, with $6$ hidden layers, $12$ attention heads, and $768$ hidden dimensions) \cite{he2023debertav3}. Original DeBERTa introduced two core innovations which v3 builds upon:
+\begin{enumerate}
+    \item \textbf{Disentangled Attention:} Each input token is represented by two vectors: a content vector $\mathbf{c}_i$ and a relative position vector $\mathbf{p}_{i,j}$. The attention matrix explicitly retains the content-to-content term alongside the enabled content-to-position (c2p) and position-to-content (p2c) relative terms (the position-to-position term is disabled):
+    \begin{equation}
+    \begin{aligned}
+        A_{i,j} = \; & \mathbf{c}_i \mathbf{c}_j^T + \mathbf{c}_i \mathbf{p}_{i,j}^T + \mathbf{p}_{j,i} \mathbf{c}_j^T
+    \end{aligned}
+    \end{equation}
+    This enables the model to evaluate the interaction of semantic content relative to syntactic displacement accurately.
+    \item \textbf{Replaced Token Detection (RTD) and Gradient-Disentangled Embedding Sharing:} While original DeBERTa used Masked Language Modeling and an Enhanced Mask Decoder, DeBERTa-v3 transitions to an ELECTRA-style RTD pre-training objective and introduces gradient-disentangled embedding sharing to improve training efficiency and downstream task adaptation.
+\end{enumerate}
+
+\textbf{Fine-Tuning Strategy:} DeBERTa-v3-small is fine-tuned end-to-end on $51,200$ training emails using a sequence length of $512$ tokens over three epochs. We optimize cross-entropy loss across the 4-cohort labels using AdamW with a learning rate of $2 \times 10^{-5}$, linear warmup for $10\%$ of steps, and cosine learning rate decay. Following fine-tuning, the classification head is discarded, and the network operates as a frozen feature extractor:
+\begin{equation}
+    \mathbf{x}_{\text{sem}} = \text{TransformerEncoder}(x)_{[\text{CLS}]} \in \mathbb{R}^{768}
+\end{equation}
+The continuous vector $\mathbf{x}_{\text{sem}}$ projects the semantic intent, urgency vectors, and psychological manipulation framing of the email into a compact 768-dimensional space.
+
+\subsection{Dual-Branch Feature Fusion}
+The stylometric and semantic vectors are fused via early concatenation:
+\begin{equation}
+    \mathbf{x}_{\text{fused}} = [\mathbf{x}_{\text{stylo}} \mathbin{\Vert} \mathbf{x}_{\text{sem}}] \in \mathbb{R}^{100,768}
+\end{equation}
+Because $\mathbf{x}_{\text{stylo}}$ is highly sparse ($100,000$ dimensions with $<0.5\%$ active indices) and $\mathbf{x}_{\text{sem}}$ is completely dense ($768$ continuous dimensions), downstream classifiers are engineered to handle heterogeneous sparse-dense representations efficiently.
+
+\subsection{Extensible Classification Heads}
+Anti-PLUTO implements an abstract base classifier interface (\texttt{BaseFusionClassifier}) allowing configuration across multiple classification paradigms:
+\begin{enumerate}
+    \item \textbf{XGBoost Fusion Head (Baseline):} Extreme Gradient Boosted decision trees \cite{chen2016xgboost}. Built using histogram-based tree partitioning (\texttt{tree\_method='hist'}) with $500$ estimators, learning rate $\eta = 0.08$, maximum tree depth $6$, and early stopping.
+    \item \textbf{Random Forest Fusion Head:} An ensemble of $200$ bagged decision trees \cite{breiman2001random} using Gini impurity criteria, maximum depth $35$, and square-root feature subsampling ($\sqrt{100,768} \approx 317$ features evaluated per split).
+    \item \textbf{Multi-Layer Perceptron (MLP) Head:} A deep feed-forward neural network implemented in PyTorch:
+    \begin{equation*}
+    \begin{aligned}
+        \mathbb{R}^{100,768} &\xrightarrow{\text{Linear}} \mathbb{R}^{256} \xrightarrow{\text{LayerNorm}} \xrightarrow{\text{ReLU}} \\
+        &\xrightarrow{\text{Dropout}(0.3)} \mathbb{R}^{64} \xrightarrow{\text{Linear}} \mathbb{R}^4
+    \end{aligned}
+    \end{equation*}
+    Trained via AdamW on CUDA with cosine annealing.
+    \item \textbf{1D Convolutional Neural Network (1D-CNN) Head:} Projects the feature space into a 2D tensor $(B, 64, 32)$ followed by parallel 1D convolutional filter banks (kernel sizes 3 and 5), batch normalization, max pooling, adaptive average pooling, and a fully connected softmax layer.
+\end{enumerate}
+
+\subsection{Representation Modes and Deployment Options}
+\label{sec:pluggable_modes}
+To support different deployment environments, Anti-PLUTO separates feature extraction and classification into three runtime modes:
+\begin{enumerate}
+    \item \textbf{Dual-Branch Fusion Mode (\texttt{fusion}, Default):} Computes both the $100,000$-dimensional stylometric sparse vector and the $768$-dimensional DeBERTa-v3 embedding, feeding the concatenated $\mathbb{R}^{100,768}$ vector into the active fusion head (XGBoost, Random Forest, MLP, or 1D-CNN). This mode combines both representations and achieved the lowest false positive rate ($0.81\%$ at $\tau=0.50$) in our main evaluations.
+    \item \textbf{Semantic-Only Mode (\texttt{semantic}):} Evaluates emails directly through the fine-tuned DeBERTa-v3 classification head (\emph{Direct DeBERTa}), bypassing stylometric extraction and XGBoost inference passes entirely. As evaluated in Section~\ref{sec:ablation}, contextual semantics drives the majority of the model's accuracy ($98.42\%$ under the Semantic-XGB ablation). Bypassing the $100,000$-dimensional TF-IDF extraction saves CPU memory and reduces feature computation time, which is useful in high-throughput gateway queues. (Note that in Section~\ref{sec:ablation}, the controlled feature ablation specifically evaluates \emph{Semantic-XGB} where DeBERTa embeddings feed into an XGBoost head under strict hyperparameter parity, whereas the production semantic mode deploys the transformer classification head directly).
+    \item \textbf{Stylometric-Only Mode (\texttt{stylometric}):} Evaluates emails using only the $100,000$-dimensional TF-IDF features via a standalone linear classifier ($96.69\%$ test accuracy). This mode runs on CPU without requiring PyTorch forward passes or a GPU, executing in $\sim 39\text{ ms}$ for low-resource or edge deployments.
+\end{enumerate}
+These modes can be selected via the Anti-PLUTO CLI (\texttt{antipluto serve --mode} and \texttt{antipluto predict --mode}) or per request through REST API headers.
+
+
+
+% ==============================================================================
+% SECTION V: DATASET CURATION & SYNTHETIC GENERATION
+% ==============================================================================
+\section{Dataset Curation and Synthetic Generation}
+\label{sec:dataset}
+
+\subsection{Base Human Email Corpora}
+To establish a representative benchmark distribution, our human email partition ($32{,}000$ samples) was aggregated from five standard historical benchmark repositories:
+\begin{itemize}
+    \item \textbf{Enron Email Corpus \cite{klimt2004enron}:} The original unmodified maildir archive (\texttt{enron\_mail\_20150507.tar.gz}) was used explicitly to preserve authentic casing, paragraph irregularity, and punctuation cadence. Pre-lowercased or pre-anonymized redistributions of Enron were deliberately avoided, as they strip the very features the stylometric branch requires to discriminate human from LLM-generated prose.
+    \item \textbf{Nazario Phishing Corpus \cite{nazario2005phishing}:} Real-world historical phishing attacks (\texttt{phishing0.mbox} through \texttt{phishing-2022.mbox}) spanning credential harvesting, financial fraud, and malware delivery, constrained to entries prior to 2023 to avoid contamination from LLM-generated spam in later archives.
+    \item \textbf{TREC 2007 Public Spam Track \cite{cormack2007trec}:} The \texttt{trec07p.tgz} corpus augments both phishing and benign distributions with verified labeled samples; ground truth is sourced from \texttt{full/index}.
+    \item \textbf{Nigerian Fraud Corpus (CLAIR 419):} Advance-fee social engineering and 419 scam variants from the CLAIR fraudulent email corpus in Unix mbox format.
+    \item \textbf{Apache SpamAssassin Public Corpus:} Raw spam and easy/hard ham partitions inject authentic opportunistic human spam into the phishing and benign pools.
+\end{itemize}
+
+The full ingestion pipeline yields $215{,}471$ human benign records and $45{,}547$ human phishing records in JSONL format after applying HTML stripping (BeautifulSoup4), thread boundary slicing (17-rule \texttt{HeaderSlicer}), and boilerplate filtering (NDRs, Exchange auto-responses, Lotus Notes artifacts, SpamAssassin corpus management shell-script logs). Prior to synthetic generation, a strict SHA-256 content deduplication step removed exact duplicate bodies, yielding a final unique generation pool of $213{,}519$ benign and $42{,}029$ phishing emails. Importantly, the Human Phishing class is a heterogeneous mixture: it retains generic mass spam from the SpamAssassin and TREC corpora alongside the structured credential harvesting and targeted social engineering attacks sourced from the Nazario corpus.
+
+\subsubsection{Comparison with MeAJOR Pipeline}
+To validate masking pipeline correctness, a structured empirical comparison against the MeAJOR corpus \cite{meajor2025corpus} was performed on matched Enron and TREC07 samples, executing a custom comparison harness on shared source emails. Both pipelines produced near-identical output on core entity types (NAME, ORGANIZATION, DATE, ADDRESS, EMAIL\_ADDRESS, PHONE\_NUMBER, URL), confirming alignment on standard PII coverage. Table~\ref{tab:meajor_diff} summarizes the key structural differences.
+
+\begin{table}[!htbp]
+\caption{Anti-PLUTO vs. MeAJOR Masking Pipeline: Key Structural Differences}
+\label{tab:meajor_diff}
+\centering
+\resizebox{\columnwidth}{!}{%
+\begin{tabular}{l p{3.4cm} p{3.4cm}}
+\toprule
+\textbf{Dimension} & \textbf{Anti-PLUTO} & \textbf{MeAJOR} \\
+\midrule
+Token format & \texttt{[TOKEN]} bracketed & \texttt{\textless|TOKEN|\textgreater} delimited \\
+Thread handling & \texttt{HeaderSlicer} strips reply chains (17 cascading regex rules) & Retains full chain appended after \texttt{\textless|EMAIL\_SEPARATOR|\textgreater} \\
+NORP demonyms & Masked as \texttt{[ORGANIZATION]} (e.g., ``Canadian'') & Left as plain text \\
+Cardinal numbers & Replaced by \texttt{[REFERENCE\_NUMBER]} (e.g., ``53'', ``100\%'') & Retained as literals \\
+Product names & Masked as \texttt{[PRODUCT]} (e.g., ``bash'') & Left as plain text \\
+Homoglyphs & NFKC + confusable mapping (zero \^A artifacts) & Residual UTF-8 encoding artefacts present in some records \\
+\bottomrule
+\end{tabular}%
+}
+\end{table}
+
+To illustrate these differences concretely, Table~\ref{tab:meajor_excerpts} presents two representative side-by-side excerpts from matched emails.
+
+\begin{table}[!htbp]
+\caption{Representative Side-by-Side Masking Excerpts: Anti-PLUTO vs. MeAJOR}
+\label{tab:meajor_excerpts}
+\centering
+\footnotesize
+\resizebox{\columnwidth}{!}{%
+\begin{tabular}{l >{\raggedright\arraybackslash}p{3.4cm} >{\raggedright\arraybackslash}p{3.4cm}}
+\toprule
+\textbf{} & \textbf{Anti-PLUTO (masked)} & \textbf{MeAJOR (masked)} \\
+\midrule
+\multicolumn{3}{l}{\textit{Example T1: TREC07 Spam (label: phishing): NORP masking and token format}} \\
+\midrule
+Body excerpt & \texttt{In what ways are [ORGANIZATION] drugs better than [ORGANIZATION] ones? Our [ORGANIZATION] online pharmacy\ldots{} [URL] is waiting.} & \texttt{In what ways are Canadian drugs better than American ones? Our Canadian online pharmacy\ldots{} \textless|URL|\textgreater{} is waiting.\ \textless|EMAIL\_\allowbreak SEPARATOR|\textgreater{}\ Dear cust\ldots{}} \\
+Difference & Demonyms (``Canadian'', ``American'') masked; URL token uses \texttt{[URL]} format; no duplicated thread body. & Demonyms retained as plain text; URL uses \texttt{\textless|URL|\textgreater} format; full thread appended. \\
+\midrule
+\multicolumn{3}{l}{\textit{Example N1: Nigerian Fraud Corpus (label: phishing): PII coverage gap}} \\
+\midrule
+Body excerpt & \texttt{I am Mr. [NAME], currently [ORGANIZATION] with a reputable bank here in [ADDRESS]\ldots{} an [ORGANIZATION] Foreign Oil consultant, MR [NAME] made a (Fixed deposit)\ldots{} valued at [FINANCIAL\_\allowbreak INFO]\ldots{}} & \texttt{I am Mr. [NAME], currently Chief Credit \& Risk Officer with a reputable bank\ldots{} an Iraqi Foreign Oil consultant, MR MOHAMMAD AL NASSER made a (Fixed deposit) for 36 cal\ldots{}} \\
+Difference & Job title (``Chief Credit \& Risk Officer''), inline name (``MOHAMMAD AL NASSER''), nationality (``Iraqi''), and deposit amount all masked. & Job title, full name, nationality adjective, and monetary value all left unmasked, representing a significant PII coverage gap in free-form prose positions. \\
+\bottomrule
+\end{tabular}%
+}
+\end{table}
+
+\subsection{Synthetic LLM Cohort Generation}
+To generate the synthetic cohorts ($32{,}000$ samples), an automated batch generation client (\texttt{antipluto.generation.client}) was established using the \textbf{Microsoft Azure AI Foundry API} (accessed via the standard OpenAI Python SDK pointed at the Azure inference gateway), which provides API access to multiple LLM families under a unified interface.
+
+\subsubsection{LLM-Assisted Benign Cohort (LB: 16,000 Records)}
+Human Enron drafts were processed through a writing-assistant prompt designed to polish corporate email style while strictly preserving all semantic content. The full verbatim prompts are as follows:
+
+\textbf{System Prompt:}
+\begin{quote}\small
+You are an executive corporate writing assistant. Your task is to polish, formalize, and optimize internal enterprise communications to ensure professional adherence to corporate workflow standards.
+\end{quote}
+
+\textbf{User Prompt Template:}
+\begin{quote}\small
+You will be given \{n\} human-drafted corporate emails. For each one, produce a polished, professional rewrite. OUTPUT FORMAT (STRICT): Respond with ONLY a raw JSON array. The array must contain exactly \{n\} JSON objects, each with exactly two keys: ``subject'' and ``body''.
+
+Rewriting rules: (1) Retain all core semantic elements, dates, names, and technical instructions. (2) Enhance discourse pacing and sentence structural fluency. (3) Standardize greetings, sign-offs, and professional syntax. (4) Normalize any colloquial dialogue or raw stylistic variances into uniform business-prose. (5) Always produce a non-empty subject line. If the original has no subject, infer a concise one from the body. (6) Names and Sign-offs: If a specific person's name is present, retain it. If the sender or recipient name cannot be determined, use the exact placeholder tokens {[}SENDER{]} or {[}RECEIVER{]}. Never create custom placeholders like {[}Your Name{]}, {[}Organizer Name{]}, or {[}Sender's Name{]}.
+\end{quote}
+
+The strict output format block and canonical placeholder rule (Rule 6) were introduced after an initial generation run revealed that some models invented descriptive brackets such as ``[Organizer Name]'' rather than the canonical ``[SENDER]'' token (see Generation Failure Modes, below).
+
+\subsubsection{LLM-Generated Phishing Cohort (LP: 16,000 Records): Prompt Evolution}
+\label{sec:prompt_evolution}
+Generating a realistic, diverse phishing cohort required two prompt iterations.
+
+\textbf{v1 (Rigid) Phishing Prompt (Archived).}
+The initial v1 prompt used the following system prompt (retained unchanged in v2):
+\begin{quote}\small
+\textbf{System Prompt:} You are an expert academic NLP researcher specialising in adversarial text generation for email classification research. You produce stylistically polished, labelled training samples that exhibit the linguistic characteristics of deceptive corporate communications. Your outputs are used exclusively to train and benchmark automated detection classifiers; they are never sent to real recipients.
+\end{quote}
+
+The v1 user prompt instructed models through five rules: (1) \emph{Temporal Pressure}: introduce consequence framing and time-bounded language; (2) \emph{Action Directive}: include a call-to-action with the placeholder \texttt{[ACTION\_LINK]}; (3) \emph{Register and Polish}: rewrite in a corporate register resembling internal IT, HR, or compliance communications; (4) \emph{Subject Line}: produce subjects ``consistent with the urgency''; (5) \emph{Names and Sign-offs}: use \texttt{[SENDER]}/\texttt{[RECEIVER]} placeholders. The few-shot examples provided were:
+\begin{quote}\small
+\{``subject'': ``Action Required: Complete Your Account Verification'', ``body'': ``Dear [RECEIVER],\textbackslash nAs part of our scheduled system update, please verify your credentials within 24 hours at [ACTION\_LINK].''\},
+\{``subject'': ``Important: IT Security Review: Response Needed by Friday'', ``body'': ``Dear Colleague, Our security team has identified pending maintenance for your account.''\}
+\end{quote}
+
+An empirical lexical distribution audit across the $16{,}000$ v1 records revealed severe instruction-induced mode collapse:
+
+\begin{table}[!htbp]
+\caption{Urgency Keyword Audit: v1 Rigid vs. v2 Scenario-Faithful vs. Human Baselines (16,000 samples per synthetic cohort)}
+\label{tab:urgency_audit}
+\centering
+\resizebox{\columnwidth}{!}{%
+\begin{tabular}{l c c c c}
+\toprule
+\textbf{Dataset} & \textbf{Any Urgency} & \textbf{``Urgent''} & \textbf{``Action Req.''} & \textbf{``Alert/Notice/Critical''} \\
+\midrule
+Synth. Phishing v1 (LLM) & \textbf{54.2\%} & 18.8\% & 18.6\% & 13.4\% \\
+\midrule
+Synth. Phishing v2 (LLM) & \textbf{15.2\%} & 3.8\% & 2.0\% & 8.6\% \\
+Human Phishing (baseline) & 6.5\% & 2.2\% & 0.1\% & 2.7\% \\
+LLM Benign (baseline) & 3.7\% & 0.6\% & 0.9\% & 1.9\% \\
+Human Benign (baseline) & 2.0\% & 0.2\% & 0.0\% & 1.4\% \\
+\bottomrule
+\end{tabular}%
+}
+\end{table}
+
+The v1 dataset exhibited an $8.3\times$ overrepresentation of urgency keywords vs. real human phishing ($54.2\%$ vs. $6.5\%$), creating a shortcut learning risk where naive classifiers could achieve high recall by keying on ``Action Required'' / ``Urgent'' prefixes rather than invariant stylometric and semantic structures. Table~\ref{tab:prompt_diff} shows the rule-by-rule diff between v1 and v2.
+
+\begin{table}[!htbp]
+\caption{v1 vs. v2 Phishing Prompt: Rule-by-Rule Diff}
+\label{tab:prompt_diff}
+\centering
+\resizebox{\columnwidth}{!}{%
+\begin{tabular}{c p{3.3cm} p{3.3cm}}
+\toprule
+\textbf{Rule} & \textbf{v1 (Rigid)} & \textbf{v2 (Scenario-Faithful)} \\
+\midrule
+1 & Temporal Pressure: introduce consequence framing and time-bounded language & Scenario and Intent Fidelity: preserve the original email's core scenario and deceptive intent \\
+2 & Action Directive: include a clear call-to-action; use {[}ACTION\_LINK{]} & Register and Polish: remove errors; rewrite in a fluent register appropriate to the specific scenario \\
+3 & Register and Polish: corporate register resembling IT/HR/compliance & Call to Action: insert {[}ACTION\_LINK{]} only if the source email contains a URL \\
+4 & Subject Line: consistent with the urgency & Subject Line: realistic subject matching the specific topic; do NOT default to ``Urgent:'' or ``Action Required:'' \\
+5 & Names and Sign-offs (unchanged) & Names and Sign-offs (unchanged) \\
+\bottomrule
+\end{tabular}%
+}
+\end{table}
+
+\textbf{v2 (Scenario-Faithful) Active Prompt.}
+The v2 redesign replaced the urgency-forcing rules with scenario-faithful instructions and diversified the few-shot examples:
+\begin{quote}\small
+\textbf{User Prompt (v2):} You are generating adversarial email samples for a supervised classifier training dataset. For each source text, produce a rewritten version that exhibits the stylometric and structural properties characteristic of deceptive communications while faithfully preserving the original email's scenario and intent. [Strict output format: raw JSON array, no markdown, exactly \{n\} objects with ``subject'' and ``body'' keys only.]
+
+Rule 1: Scenario and Intent Fidelity: invoice scam~$\to$ invoice scam; delivery lure~$\to$ delivery lure; credential alert~$\to$ credential alert. Do NOT convert all emails into generic IT security alerts. Rule 2: Register and Polish: remove errors; rewrite in a fluent register appropriate to the scenario. Rule 3: Call to Action: insert {[}ACTION\_LINK{]} only if the source email has a link or URL. Rule 4: Subject Line: realistic subject matching the specific topic; do not default to ``Urgent:'' or ``Action Required:'' unless the source warrants it. Rule 5: Names and Sign-offs: use {[}SENDER{]}/{[}RECEIVER{]} if names cannot be determined; never invent custom brackets.
+
+Few-shot examples: \{``subject'': ``Invoice \#84920: Payment Processing Notice'', ``body'': ``Dear [RECEIVER], Please find attached the updated invoice...''\}; \{``subject'': ``Your Package Is on Hold: Confirm Delivery Address'', ``body'': ``Dear Customer, We were unable to deliver your package...''\}; \{``subject'': ``Exclusive Investment Opportunity: Q4 Portfolio Review'', ``body'': ``Dear [RECEIVER], Following our recent market analysis...''\}
+\end{quote}
+
+The v2 regeneration reduced overall urgency frequency by $\mathbf{-72\%}$ ($54.2\% \to 15.2\%$), with ``Urgent'' dropping from $18.8\%$ to $3.8\%$ and ``Action Required'' from $18.6\%$ to $2.0\%$. The remaining $15.2\%$ is contextually justified: many seed emails are genuine credential-alert scenarios (Chase, eBay, PayPal) that naturally warrant alert-related subjects even under scenario-faithful rewriting.
+
+\subsubsection{Generation Infrastructure and Seed Provenance Architecture}
+Cohort generation was distributed across an eight-model ensemble hosted via the Microsoft Azure AI Foundry Serverless API: \texttt{gpt-5-mini}, \texttt{gpt-4o}, \texttt{claude-sonnet-5}, \texttt{Llama-4-Scout-17B-16E-Instruct}, \texttt{DeepSeek-V3.2}, \texttt{mistral-small-2503}, \texttt{grok-4.3}, and \texttt{Phi-4}. Each model synthesized $2{,}000$ records per cohort via a batched API client ($10$ emails per request) utilizing a two-tier retry policy (L1: per-call; L2: per-batch) and an independent $10\%$ over-provisioned buffer pool ($2{,}200$ candidate seeds per model).
+
+\textbf{Seed Allocation and Provenance Architecture:} To ensure auditability without inducing synthetic collinearity across models, seed allocation was engineered as follows:
+\begin{enumerate}
+    \item \textit{Independent PRNG Streams:} Each model $m$ was assigned an independent pseudo-random number generator stream $\text{RNG}_m = \text{Random}(s_0 + h(m))$, where base seed $s_0 = 42$ and $h(m) = \text{MD5}(m) \pmod{10^4}$.
+    \item \textit{Massive Sampling Universe:} Rather than rewriting a small shared set of seed documents, models sampled independently from the master base human corpora consisting of $42{,}029$ human phishing and $213{,}519$ human benign emails. Across the $16{,}000$ synthetic phishing draws, the ensemble sampled $11{,}918$ distinct human seeds ($74.5\%$ uniqueness); across the $16{,}000$ synthetic benign draws, the ensemble sampled $14{,}705$ distinct human seeds ($91.9\%$ uniqueness).
+    \item \textit{Definition of \texttt{seed\_idx}:} In the Anti-PLUTO record schema, \texttt{seed\_idx} denotes the sequential integer offset ($i \in [0, 2199]$) within that specific model's local generation queue. Crucially, the tuple \texttt{(model, seed\_idx)} uniquely identifies a generated synthetic record within the scope of this dataset, but it is not a global identifier of the underlying human email. The specific historical human seed used for each synthetic record is resolved by indexing into the model's deterministically generated PRNG pool.
+\end{enumerate}
+
+\subsubsection{Generation Failure Modes and Data Hygiene}
+A post-generation audit of the $16{,}000$-record phishing cohort identified three failure patterns. Representative verbatim examples (in JSON record format) are provided for each type:
+
+\textbf{Type A: Model Meta-Refusal (\texttt{mistral-small-2503}, 37 records, $1.85\%$ of quota).}
+Despite the academic NLP framing of the system prompt, \texttt{mistral-small-2503} substituted canned spam-warning boilerplate in place of realistic phishing content. All 7 other models achieved $0\%$ refusal rates. Representative refusal variants:
+\begin{quote}\small
+\texttt{\{``subject'': ``Spam: Do Not Respond'', ``body'': ``Dear [RECEIVER],\textbackslash n\textbackslash nThis email has been identified as spam and should be deleted immediately. Do not click any links or respond to this message.\textbackslash n\textbackslash nIT Security Team''\}} \hfill\textit{(Variant A1, seed\_idx 133)}
+
+\texttt{\{``subject'': ``Spam: No Subject'', ``body'': ``This message has been identified as spam and will not be processed.''\}} \hfill\textit{(Variant A2, seed\_idx 194)}
+
+\texttt{\{``subject'': ``No Subject'', ``body'': ``Dear [RECEIVER],\textbackslash n\textbackslash nThis message contains no relevant information for our records.\textbackslash n\textbackslash nRegards,\textbackslash n[SENDER]''\}} \hfill\textit{(Variant A4, seed\_idx 1432)}
+\end{quote}
+All 37 records were identified via automated regex pattern matching on subject/body content and purged from the dataset.
+
+\textbf{Type B: Header Metadata Leakage (\texttt{gpt-5-mini}, rare).}
+In rare cases, \texttt{gpt-5-mini} reproduced raw email forwarding headers from seed texts into the synthetic body, and produced dangling greetings with no sender identity:
+\begin{quote}\small
+\texttt{\{``source'': ``gpt-5-mini'', ``seed\_idx'': 9, ``body'': ``Jeremy,\textbackslash n\textbackslash nThanks. My understanding is that the report was submitted today. I am expecting to receive a copy; once I do, I will forward it to you.\textbackslash n\textbackslash nReference:\textbackslash nJeremy Meier \textless jermeier@earthlink.net\textgreater\textbackslash n10/13/2000 02:41 PM\textbackslash n\textbackslash nRegards,''\}}
+\end{quote}
+The HeaderSlicer pipeline was verified to strip such leakage during the inference masking stage; prompt hardening additionally instructed models not to reproduce forwarding metadata.
+
+\textbf{Type C: Bracket Invention (\texttt{gpt-5-mini}, rare).}
+Instead of standardizing unresolvable identities to \texttt{[SENDER]} or \texttt{[RECEIVER]}, the model invented descriptive role placeholders:
+\begin{quote}\small
+\texttt{\{``source'': ``gpt-5-mini'', ``seed\_idx'': 16, ``body'': ``Dear Research Group,\textbackslash n\textbackslash n\ldots If you are interested in presenting or attending, please reply\ldots\textbackslash n\textbackslash nBest regards,\textbackslash n\textbackslash n[Organizer Name]''\}}
+\end{quote}
+Remediation comprised two steps: (1) the v2 user prompt explicitly forbids custom bracket inventions such as ``[Organizer Name]'', ``[Sender's Name]'', or ``[Company Name]''; and (2) \texttt{PIIMasker} was extended to automatically normalize any remaining \texttt{[SENDER]} and \texttt{[RECEIVER]} tokens to the canonical \texttt{[NAME]} token during masking.
+
+\subsection{Dataset Partitioning Protocol}
+The aggregated $64{,}000$ email corpus was partitioned using stratified sampling to ensure identical class distributions across splits:
+\begin{itemize}
+    \item \textbf{Training Partition ($80\%$, $51{,}200$ samples):} $12{,}800$ samples per cohort. Used exclusively for TF-IDF vocabulary fitting, DeBERTa-v3 fine-tuning, and fusion head training.
+    \item \textbf{Validation Partition ($10\%$, $6{,}400$ samples):} $1{,}600$ samples per cohort. Used strictly for hyperparameter selection, early stopping, and decision threshold calibration.
+    \item \textbf{Unseen Test Partition ($10\%$, $6{,}400$ samples):} $1{,}600$ samples per cohort. Completely held out and frozen; evaluated only once to verify benchmark generalization.
+\end{itemize}
+
+\subsubsection{Group Leakage and Human Seed Isolation Analysis}
+A critical methodological concern in synthetic text evaluation is near-duplicate leakage: if identical human seed emails are rewritten across multiple models and distributed randomly across training and evaluation splits, classifiers could potentially memorize source topics rather than learning invariant synthetic stylometry. We conducted an empirical audit across the partitioned splits to quantify true human seed isolation:
+\begin{itemize}
+    \item \textbf{Human Cohorts ($3{,}200$ test emails):} Exactly $100.0\%$ ($3{,}200 / 3{,}200$) of human emails in the unseen test set are distinct from the training set, ensuring zero duplicate contamination in the human distribution.
+    \item \textbf{LLM Benign Cohort ($1{,}600$ test emails):} $89.7\%$ ($1{,}435 / 1{,}600$) of synthetic test samples were generated from human seed emails that never appeared anywhere in the training set for any model.
+    \item \textbf{LLM Phishing Cohort ($1{,}600$ test emails):} $63.6\%$ ($1{,}018 / 1{,}600$) of synthetic test samples were generated from human seed emails that never appeared in the training set for any model.
+    \item \textbf{Overall Test Set Isolation:} Across all $3{,}200$ synthetic test emails, $76.7\%$ ($2{,}453 / 3{,}200$) originate from completely novel, unseen human seeds.
+\end{itemize}
+We emphasize that a naive inspection of the raw integer field \texttt{seed\_idx} across splits would observe that index values appear in both train and test partitions. This is because the tuple \texttt{(model, seed\_idx)} uniquely identifies a generated synthetic record based on sequential batch indexing within each model's private generation queue. Our leakage audit traced each synthetic record back to its underlying human seed by deterministically reconstructing the PRNG sequence for that model's pool.
+
+Nevertheless, we explicitly acknowledge that $23.3\%$ of synthetic test emails ($36.4\%$ in LLM phishing) share underlying human seed topics with training samples generated by other models. While the surface prose is independently synthesized across distinct LLMs, an ideal experimental design would partition human source seeds prior to any synthetic generation. This remaining limitation directly motivates our independent zero-day evaluation in Section~\ref{sec:zero_day}, where $2{,}000$ contemporary emails from Alibaba Qwen-3 and DeepSeek-V4 were generated with $0\%$ seed overlap and novel prompts to evaluate threat generalization under strictly source-disjoint conditions.
+
+\subsubsection{Statistical Estimation Precision and Single-Split Scope}
+The $6{,}400$-sample test partition provides relatively tight binomial confidence intervals, with a 95\% Wilson interval spanning approximately $\pm 0.3$ percentage points around the observed $98.42\%$ point estimate, indicating high estimation precision. Because the evaluation partition is stratified and class-balanced by construction, these intervals characterize performance under the benchmark cohort distribution and should not be interpreted as prevalence-adjusted estimates of real-world gateway performance (where benign traffic accounts for $>99\%$ of volume). Furthermore, these intervals treat message-level outcomes as approximate Bernoulli observations and therefore do not capture dependence induced by shared source topics, alternative train/test partitions, or retraining variability across random seeds. Conducting multi-fold cross-validation across the full deep transformer fine-tuning pipeline was precluded by local compute constraints ($\sim$16.6 hours per training run).
+
+
+% ==============================================================================
+% SECTION VI: EXPERIMENTAL SETUP
+% ==============================================================================
+\section{Experimental Setup and Methodology}
+\label{sec:experiments}
+
+\subsection{Hardware and Software Environment}
+All experiments were executed on an \textbf{HP Pavilion Gaming Laptop 15-ec1xxx} running 64-bit Windows 11 Pro, powered by an \textbf{AMD Ryzen 7 4800H} CPU (8 cores, 16 threads, 2.90 GHz base / 4.20 GHz boost), $\mathbf{20\text{ GB}}$ DDR4-3200 RAM, and an \textbf{NVIDIA GeForce GTX 1660 Ti with Max-Q Design} ($6\text{ GB}$ GDDR6 VRAM, CUDA 12.4). The software stack was built on Python 3.12, PyTorch 2.4.0, Hugging Face Transformers 4.44.0, Scikit-learn 1.5.1, XGBoost 2.1.1, spaCy 3.x, FastAPI 0.110.0, and Uvicorn 0.28.0. Legacy baseline engines (Apache SpamAssassin v3.4+ and Rspamd v3.8.1) were deployed inside a WSL2 Ubuntu environment running on the same host.
+
+\subsection{Training Pipeline: Phase-by-Phase Protocol}
+The Anti-PLUTO training pipeline executes in six sequential phases with independent stage-level checkpointing, enabling crash resumption at any point without recomputation. Table~\ref{tab:training_phases} summarizes each phase, its key parameters, and wall-clock runtime on the host hardware.
+
+\begin{table}[!htbp]
+\caption{Anti-PLUTO Training Pipeline: Phase-by-Phase Protocol and Runtimes}
+\label{tab:training_phases}
+\centering
+\begin{tabularx}{\columnwidth}{c X r}
+\toprule
+\textbf{Ph.} & \textbf{Description} & \textbf{Runtime} \\
+\midrule
+1 & Data loading \& stratified 80/10/10 split (seed=42) & $\sim$8 s \\
+2 & TF-IDF fitting: char (3--5) + word (1--2), 100k feat. & $\sim$1.5 min \\
+3 & DeBERTa-v3 fine-tuning: 3 epochs, batch=16, fp16 & $\sim$16.6 hrs \\
+4 & [CLS] embedding extraction: 768-d, all three splits & $\sim$3.2 hrs \\
+5 & XGBoost: 100,768 features, early stopping 30 rounds & $\sim$20 min \\
+6 & Final evaluation \& ONNX export: 6,400 test emails & $\sim$1 min \\
+\bottomrule
+\end{tabularx}
+\end{table}
+
+\textbf{Phase 3: DeBERTa Fine-Tuning Convergence:} The neural fine-tuning phase dominated the total compute budget at $\sim 16.6$ hours (total FLOPs: $1.87 \times 10^{16}$; throughput: $2.57$ samples/s). Table~\ref{tab:deberta_training} reports epoch-by-epoch loss and accuracy, converging from near-random baseline ($\text{loss} \approx -\ln(0.25) = 1.386$) to $97.92\%$ validation accuracy at epoch 3.
+
+\begin{table}[!htbp]
+\caption{DeBERTa-v3-small Fine-Tuning Convergence on 51,200 Training Emails}
+\label{tab:deberta_training}
+\centering
+\resizebox{\columnwidth}{!}{%
+\begin{tabular}{c c c c c}
+\toprule
+\textbf{Step} & \textbf{Epoch} & \textbf{Train Loss} & \textbf{Val Loss} & \textbf{Val Acc.} \\
+\midrule
+1 & 0.02 & 1.3912 & -- & -- \\
+3,200 & 1.00 & 0.0946 & 0.1151 & 97.02\% \\
+6,400 & 2.00 & 0.0727 & 0.0986 & 97.77\% \\
+9,600 & 3.00 & 0.0384 & 0.1080 & 97.92\% \\
+\bottomrule
+\end{tabular}%
+}
+\end{table}
+
+\textbf{Phase 5: XGBoost Fusion Training:} Fitting XGBoost with $51{,}200 \times 100{,}768$ features on GPU requested $6.996\text{ GB}$ of VRAM, exceeding CUDA context headroom on the $6\text{ GB}$ device. Training was offloaded to multi-threaded CPU (\texttt{tree\_method='hist'}, \texttt{n\_jobs=-1}), completing in $\sim$20 minutes using the host's $20\text{ GB}$ RAM. Early stopping triggered at iteration 36 after 30 stagnant rounds, with the best model at iteration 6 (Table~\ref{tab:xgb_training}).
+
+\begin{table}[!htbp]
+\caption{XGBoost Fusion Classifier Training Progression (100,768-Dimensional Features)}
+\label{tab:xgb_training}
+\centering
+\resizebox{\columnwidth}{!}{%
+\begin{tabular}{c c c c c}
+\toprule
+\textbf{Iter.} & \textbf{Train Logloss} & \textbf{Tr. Err.} & \textbf{Val Logloss} & \textbf{Val Acc.} \\
+\midrule
+0 & 1.23149 & 0.00189 & 1.23498 & 98.22\% \\
+\textbf{6 (Best)} & \textbf{0.55960} & \textbf{0.00072} & \textbf{0.11079} & \textbf{98.20\%} \\
+36 (Halt) & 0.05596 & 0.00072 & 0.11079 & Early stop \\
+\bottomrule
+\end{tabular}%
+}
+\end{table}
+
+The numerical disparity between training classification error ($0.00072$, reflecting near-complete empirical separation across the $51{,}200$ training examples) and validation accuracy ($98.20\%$) underscores the substantial fitting capacity of gradient-boosted tree ensembles across $100{,}768$-dimensional sparse-dense feature representations. Crucially, validation logloss reached its global minimum ($0.11079$) at iteration 6, where early stopping with a 30-round patience window halted optimization before decision trees could overfit noisy leaf partitions, maintaining high generalization on the unseen test partition ($98.42\%$).
+
+\subsection{Evaluation Metrics}
+To assess multi-class efficacy, binary threat interception, and operational performance comprehensively, we compute the following metrics on the test partition $\mathcal{D}_{\text{test}}$ ($N = 6,400$):
+\begin{align}
+    \text{Accuracy} &= \frac{1}{N} \sum_{k=0}^3 \text{TP}_k \\
+    \text{Macro F1} &= \frac{1}{4} \sum_{k=0}^3 \text{F1}_k \\
+    \text{Phishing Recall} &= \frac{\text{TP}_{\text{phish}}}{\text{TP}_{\text{phish}} + \text{FN}_{\text{phish}}} \\
+    \text{Benign FPR} &= \frac{\text{FP}_{\text{benign}}}{\text{FP}_{\text{benign}} + \text{TN}_{\text{benign}}} \\
+    \text{Inference Latency} &= \frac{1}{N} \sum_{i=1}^N (t_{\text{end}, i} - t_{\text{start}, i})
+\end{align}
+Throughput is reported in processed messages per second ($\text{msgs/s}$).
+
+\subsection{Baseline Evaluation Controls}
+External baselines are evaluated under four strict methodological controls: (1) \textbf{Raw Unmasked Input}: SpamAssassin and Rspamd receive unmasked email content, as their heuristics depend on literal domain names, brand keywords, and URL patterns; Anti-PLUTO ingests the same raw input and applies masking internally; (2) \textbf{Test Set Parity}: all three systems evaluate the identical frozen $6{,}400$-sample test partition in the same order; (3) \textbf{Standardized Neutral RFC 5322 MIME Envelopes}: all emails are wrapped in identical compliant headers (neutral sender domain, deterministic \texttt{Message-ID}, unified timestamp) to prevent confounding header-defect penalties (\texttt{MISSING\_DATE}, \texttt{NO\_RECEIVED}); and (4) \textbf{Strict Offline Mode}: both legacy engines are run with DNS and DNSBL lookups disabled (\texttt{spamd -L}; Rspamd \texttt{enable\_dns = false}), benchmarking only their internal content-analysis rule engines on equal ground.
+
+\subsubsection{Rationale for Offline-Mode Baseline Evaluation}
+A natural question arises: why disable network telemetry for SpamAssassin and Rspamd? These engines are intentionally co-designed to leverage SURBL/DNSBL, Razor, and Pyzor lookups, and disabling them removes a significant operational component.
+
+The answer lies in the specific threat scenario under evaluation: \textbf{lateral spear-phishing attacks and zero-hour campaigns where domain reputation is neutral or unavailable}. In enterprise environments, advanced spear-phishing frequently originates from compromised internal or partner email accounts (lateral phishing) \cite{ho2019detecting, bethany2025}. In such attacks, sending IP addresses, domain reputation, and cryptographic authentication (SPF, DKIM, DMARC) are inherently valid and unblacklisted. Similarly, when attackers deploy freshly registered domains, empirical measurements show that reputation blacklists suffer from significant propagation latency, capturing less than $20\%$ of phishing links at inception (hour zero) \cite{sheng2009empirical}. In both operational regimes, DNSBL and SURBL lookup tables provide negligible discriminative signal.
+
+Under these conditions, defensive filtering falls back entirely to \emph{content-payload} analysis, which is precisely the layer evaluated in our benchmark. Disabling external network queries therefore isolates this exact operational regime, measuring each system's performance on pure text payloads when external reputation provides no actionable signal. Readers should interpret the baseline results accordingly: not as a full-system comparison against stale, known-malicious infrastructure, but as an empirical quantification of content-layer resilience against zero-hour and lateral generative attacks.
+
+
+
+% ==============================================================================
+% SECTION VII: EMPIRICAL EVALUATION & RESULTS
+% ==============================================================================
+\section{Empirical Evaluation and Results}
+\label{sec:results}
+
+\subsection{Experiment 1: 4-Cohort Classification Analysis}
+We first evaluate the primary Anti-PLUTO architecture deploying the XGBoost fusion head on the $6,400$ unseen test emails. Table~\ref{tab:detailed_classification_report} presents the complete class-by-class precision, recall, and F1-score breakdown.
+
+\begin{table}[!htbp]
+\caption{Anti-PLUTO Detailed 4-Cohort Test Classification Report ($N = 6,400$)}
+\label{tab:detailed_classification_report}
+\centering
+\resizebox{\columnwidth}{!}{%
+\begin{tabular}{l c c c c c}
+\toprule
+\textbf{Cohort} & \textbf{Class} & \textbf{Precision} & \textbf{Recall} & \textbf{F1-Score} & \textbf{Support} \\
+\midrule
+Human Benign (HB) & 0 & 97.21\% & 98.13\% & 97.67\% & 1,600 \\
+Human Phishing (HP) & 1 & 99.06\% & 98.50\% & 98.78\% & 1,600 \\
+LLM Benign (LB)   & 2 & 98.24\% & 97.81\% & 98.03\% & 1,600 \\
+LLM Phishing (LP) & 3 & 99.19\% & 99.25\% & 99.22\% & 1,600 \\
+\midrule
+\textbf{Macro Average} & -- & \textbf{98.43\%} & \textbf{98.42\%} & \textbf{98.42\%} & 6,400 \\
+\textbf{Weighted Average} & -- & \textbf{98.43\%} & \textbf{98.42\%} & \textbf{98.42\%} & 6,400 \\
+\bottomrule
+\end{tabular}%
+}
+\end{table}
+
+The corresponding $4 \times 4$ test confusion matrix is shown in Table~\ref{tab:confusion_matrix}.
+
+\begin{table}[!htbp]
+\caption{Anti-PLUTO 4-Cohort Confusion Matrix on Unseen Test Emails}
+\label{tab:confusion_matrix}
+\centering
+\resizebox{\columnwidth}{!}{%
+\begin{tabular}{l c c c c r}
+\toprule
+& \multicolumn{4}{c}{\textbf{Predicted Class}} & \\
+\cmidrule(lr){2-5}
+\textbf{True Class} & \textbf{Pred HB} & \textbf{Pred HP} & \textbf{Pred LB} & \textbf{Pred LP} & \textbf{Total} \\
+\midrule
+\textbf{Actual HB (0)} & \textbf{1,570} & 12 & 18 & 0 & 1,600 \\
+\textbf{Actual HP (1)} & 24 & \textbf{1,576} & 0 & 0 & 1,600 \\
+\textbf{Actual LB (2)} & 21 & 1 & \textbf{1,565} & 13 & 1,600 \\
+\textbf{Actual LP (3)} & 0 & 2 & 10 & \textbf{1,588} & 1,600 \\
+\midrule
+\textbf{Total Predicted} & 1,615 & 1,591 & 1,593 & 1,601 & 6,400 \\
+\bottomrule
+\end{tabular}%
+}
+\end{table}
+
+\textbf{Hypothesis Verification:}
+\begin{itemize}
+    \item \textbf{Phishing Detection Efficacy ($\mathbf{H_1}$ Supported on the In-Distribution Benchmark):} Total phishing recall reached $\mathbf{98.94\%}$ ($3{,}166 / 3{,}200$ attacks intercepted; $1{,}576$ human and $1{,}590$ synthetic). Strikingly, recall on synthetic LLM phishing reached $\mathbf{99.38\%}$ ($1{,}590 / 1{,}600$ attacks intercepted), exceeding recall on human phishing ($98.50\%$, $1{,}576 / 1{,}600$), indicating that the v2 scenario-faithful synthetic phishing cohort retains discriminative distributional differences within this benchmark. In the raw 4-class confusion matrix (Table~\ref{tab:confusion_matrix}), $1{,}588$ of the $1{,}600$ LLM phishing emails were attributed with exact 4-class provenance (True LP, $99.25\%$), while $2$ were classified as Human Phishing (and thus still successfully intercepted as malicious, bringing binary phishing recall on LLM attacks to $1{,}588 + 2 = 1{,}590 / 1{,}600 = 99.38\%$), with only $10$ misclassified as benign. Human Benign FPR = $0.75\%$ ($12/1{,}600$); LLM Benign FPR = $0.88\%$ ($14/1{,}600$); overall Benign FPR = $\mathbf{0.81\%}$ ($26/3{,}200$).
+    \item \textbf{Provenance Attribution ($\mathbf{H_2}$ Evaluated):} Within-corpus AI vs. Human provenance discrimination achieved an accuracy of $\mathbf{99.34\%}$, precision of $\mathbf{99.44\%}$, recall of $\mathbf{99.25\%}$, and F1-score of $\mathbf{99.34\%}$ on the constructed test partition. A key methodological limitation is that the human email corpora originate from historical archives (Enron, Nazario, TREC) while the synthetic samples were generated by modern LLMs. While the zero-day experiment (\S\ref{sec:zero_day}) provides evidence that learned representations transfer across unseen contemporary generators, cross-model transfer is not the same thing as temporal validation against contemporary human writing. The historical-human versus contemporary-human confound therefore remains an unresolved empirical limitation. The availability of large, publicly shareable contemporary corporate-email corpora is constrained by privacy, confidentiality, and legal considerations, which has historically restricted academic benchmarks to established public repositories. Three methodological factors mitigate superficial shortcut learning within the available benchmark: (1) The v2 prompt redesign (\S\ref{sec:prompt_evolution}) suppressed prompt-induced urgency bias from $54.2\%$ to $15.2\%$ ($-72\%$ reduction) without degrading attribution accuracy across any classifier head; (2) The multi-stage PII masking engine sanitizes corporate names, URLs, and server identifiers, preventing models from keying on historical organizational entities; and (3) Autoregressive sampling imposes characteristic sub-word entropy patterns and sentence-length regularities captured by character $n$-gram distributions. Nonetheless, we emphasize that without contemporary human-authored control emails matched on domain and topic, this $99.34\%$ metric reflects provenance discrimination within this specific multi-era corpus rather than universal human-vs-AI separation.
+\end{itemize}
+
+
+\subsection{Experiment 2a: Multi-Classifier Head Benchmark}
+We evaluated four distinct classifier heads (XGBoost, Random Forest, PyTorch MLP, and PyTorch 1D-CNN) on identical pre-extracted dual-branch feature vectors ($\mathbf{x}_{\text{fused}} \in \mathbb{R}^{100,768}$). Table~\ref{tab:multi_model_benchmark} presents the empirical results.
+
+\begin{table*}[!htbp]
+\caption{Comprehensive Head-to-Head Classifier Benchmark across Fusion Paradigms ($N = 6,400$ Unseen Test Emails)}
+\label{tab:multi_model_benchmark}
+\centering
+\footnotesize
+\resizebox{\textwidth}{!}{%
+\begin{tabular}{l c c c c c}
+\toprule
+\textbf{Evaluation Metric} & \textbf{XGBoost} & \textbf{Random Forest} & \textbf{PyTorch MLP} & \textbf{PyTorch 1D-CNN} & \textbf{Best Performer} \\
+\midrule
+\textbf{4-Class Accuracy} & 98.42\% & \textbf{98.47\%} & 98.45\% & 98.31\% & \textbf{Random Forest} \\
+\textbf{4-Class Macro F1} & 98.42\% & \textbf{98.47\%} & 98.45\% & 98.31\% & \textbf{Random Forest} \\
+\textbf{Multiclass ROC-AUC (OVR)} & 0.9970 & 0.9982 & \textbf{0.9990} & 0.9983 & \textbf{PyTorch MLP} \\
+\textbf{Overall Phishing Recall} & 98.94\% & 99.03\% & 99.06\% & \textbf{99.16\%} & \textbf{PyTorch 1D-CNN} \\
+\textbf{Human Phishing Recall} & 98.50\% & 98.69\% & 98.69\% & \textbf{98.94\%} & \textbf{PyTorch 1D-CNN} \\
+\textbf{LLM Phishing Recall} & \textbf{99.38\%} & \textbf{99.38\%} & \textbf{99.38\%} & \textbf{99.38\%} & \textbf{Tie (All 4)} \\
+\textbf{Overall Benign FPR} & 0.81\% & \textbf{0.78\%} & 0.84\% & 0.94\% & \textbf{Random Forest} \\
+\textbf{Human Benign FPR} & 0.75\% & \textbf{0.62\%} & 0.75\% & 1.00\% & \textbf{Random Forest} \\
+\textbf{LLM Benign FPR} & \textbf{0.88\%} & 0.94\% & 0.94\% & \textbf{0.88\%} & \textbf{XGBoost / 1D-CNN} \\
+\textbf{Phishing Precision} & 99.19\% & \textbf{99.22\%} & 99.16\% & 99.06\% & \textbf{Random Forest} \\
+\textbf{Phishing F1-Score} & 99.06\% & \textbf{99.12\%} & 99.11\% & 99.11\% & \textbf{Random Forest} \\
+\textbf{Within-Corpus AI Provenance ($H_2$)} & \textbf{99.34\%} & 99.33\% & 99.33\% & 99.19\% & \textbf{XGBoost} \\
+\midrule
+\textbf{Inference Latency (per email)} & \textbf{0.213 ms} & 0.876 ms & 1.073 ms & 1.159 ms & \textbf{XGBoost ($4.1\times$ faster)} \\
+\textbf{Gateway Throughput} & \textbf{4,696 msgs/s} & 1,141 msgs/s & 932 msgs/s & 862 msgs/s & \textbf{XGBoost} \\
+\textbf{Model Size on Disk} & \textbf{0.43 MB} & 0.89 MB & 98.48 MB & 196.98 MB & \textbf{XGBoost ($229\times$ smaller)} \\
+\textbf{Training Duration} & $\sim$20 mins (CPU) & \textbf{17.88 s (CPU)} & 3.16 mins (CUDA) & 2.47 mins (CUDA) & \textbf{Random Forest} \\
+\bottomrule
+\\[-4pt]
+\multicolumn{6}{l}{\scriptsize $^\dagger$Approximate per-message Wilson score 95\% confidence intervals ($z=1.95996$) under a Bernoulli sampling assumption for binomial proportions ($N = 6{,}400$) for the \textbf{Fused XGBoost} head:} \\
+\multicolumn{6}{l}{\scriptsize \phantom{$^\dagger$}4-Class Accuracy: [98.09\%, 98.70\%]; Overall Phishing Recall: [98.52\%, 99.24\%]; LLM Phishing Recall: [98.85\%, 99.66\%]; Overall Benign FPR: [0.56\%, 1.19\%];} \\
+\multicolumn{6}{l}{\scriptsize \phantom{$^\dagger$}Within-Corpus AI Provenance: [99.11\%, 99.51\%]. Composite metrics (F1, ROC-AUC) are reported as point estimates. Because the evaluation partition is stratified and class-balanced} \\
+\multicolumn{6}{l}{\scriptsize \phantom{$^\dagger$}by construction, these intervals characterize performance under the benchmark cohort distribution and should not be interpreted as prevalence-adjusted estimates of live gateway traffic.} \\
+\end{tabular}%
+}
+\end{table*}
+
+
+\begin{figure*}[!t]
+\centering
+\includegraphics[width=0.92\textwidth]{figures/multi_model_roc_comparison.png}
+\caption{Comparative Phishing ROC Curves across Fusion Head Architectures: (a) Full ROC space illustrating high overall discrimination across all paradigms; (b) Zoomed operational high-sensitivity region ($\text{FPR} \le 3.5\%$) demonstrating that XGBoost, Random Forest, MLP, and 1D-CNN achieve similar high-catch trajectories in the critical enterprise operational band.}
+\label{fig:multi_model_roc}
+\end{figure*}
+
+Fig.~\ref{fig:multi_model_roc} displays the empirical ROC curves comparing the four heads. Key findings include:
+\begin{enumerate}
+    \item \textbf{Representation Invariance:} 4-class accuracy across all four machine learning paradigms converged within $0.16\%$ ($98.31\%$ to $98.47\%$), indicating that the joint stylometric-semantic representation is consistently separable across distinct inductive biases.
+    \item \textbf{Consistent LLM Phishing Catch Rate:} All four heads produced identical binary outcomes on the $1,600$ LLM-phishing samples, with the same $1,590$ messages detected and the same $10$ missed. Thus, every pairwise comparison contains zero discordant observations ($b=c=0$); under the exact McNemar convention, each pairwise comparison yields $p=1.000$. As detailed below, this confirms that the observed convergence reflects identical sample-level outcomes rather than statistical artifact, indicating that discriminative structure resides primarily in the shared feature representation.
+    \item \textbf{Efficiency and Latency Trade-Off (XGBoost):} While Random Forest achieved marginally higher F1 ($+0.05\%$), XGBoost ran faster ($0.213\text{ ms}$ vs. $0.876\text{ ms}$), required substantially less disk storage ($0.43\text{ MB}$ vs. $98.5\text{ MB}$ for MLP), and achieved higher throughput ($4{,}696\text{ msgs/s}$), making it a practical choice for production gateway settings.
+\end{enumerate}
+
+
+\subsubsection{Qualitative Failure Analysis of Shared Classification Errors}
+To investigate why all four distinct classifier heads (XGBoost, Random Forest, PyTorch MLP, and 1D-CNN) converged on the exact same $99.38\%$ LLM phishing recall ($1,590$ caught, $10$ missed), we performed a per-sample intersection audit across predictions. The audit confirmed that the failure mode is mathematically identical across all four paradigms: the exact same $10$ LLM phishing emails were classified as LLM Benign (Class 2), and the exact same $2$ samples were classified as Human Phishing (Class 1).
+
+Qualitative examination of these $10$ bypassed emails reveals distinct structural patterns:
+\begin{itemize}
+    \item \textbf{Conversational Banter and Low-Stakes Pretexts:} Rather than overt credential-harvesting threats, these samples represent benign-appearing organizational banter or low-stakes inquiries generated from historical spam seeds (e.g., sample 406 discussing cultural comics, sample 1026 discussing project management philosophies, sample 1668 inquiring about missing a coworker on instant messaging, and sample 4566 sharing philosophical quotes).
+    \item \textbf{Absence of Malicious Indicators:} The emails contain zero urgent calls to action, zero coercive penalties, and zero actionable hyperlinks. When LLMs rewrote these older conversational lures into polished, professional English, the rewriting process stripped away all coercive markers.
+    \item \textbf{Representation-Level Attribution:} Crucially, all four classifiers assigned these samples to Class 2 (\emph{LLM Benign}), correctly recognizing machine authorship while judging their semantic content as benign corporate correspondence. This indicates that the decision boundary on synthetic text is governed by the shared geometric structure of the hybrid feature space ($\mathbf{x}_{\text{fused}}$) rather than classifier-specific inductive biases.
+\end{itemize}
+
+\subsection{Experiment 2b: Feature Branch Ablation Study}
+\label{sec:ablation}
+To evaluate the individual and joint performance contributions of the stylometric and semantic representations, we conducted a controlled ablation study. We trained three variants of the XGBoost fusion head using identical hyperparameters ($\eta=0.08$, max depth 6, \texttt{n\_estimators} = 500, subsample $= 0.8$, \texttt{colsample\_bytree} $= 0.8$, early stopping 30 rounds) and the same 80/10/10 stratified split: a stylometric-only model ($100,000$-d TF-IDF, no DeBERTa features), a semantic-only model denoted \emph{Semantic-XGB} ($768$-d DeBERTa embeddings fed into an XGBoost head with parity hyperparameters, no TF-IDF), and the full fused model ($100,768$-d loaded from the production checkpoint). We distinguish this \emph{Semantic-XGB} ablation model from the \emph{Direct DeBERTa} production mode (\S\ref{sec:pluggable_modes}), which dispatches directly through the transformer's fine-tuned classification head without an XGBoost pass. Strict hyperparameter parity across all three configurations ensures that observed differences are attributable solely to feature space composition. Table~\ref{tab:ablation} summarizes the results.
+
+\begin{table*}[!t]
+\caption{Feature Branch Ablation Study: Quantitative Performance, Error Analysis, and Confusion Matrices ($N = 6{,}400$ Unseen Test Emails)}
+\label{tab:ablation}
+\centering
+\small
+
+\textbf{(A) Quantitative Multi-Metric and Error Rate Comparison across Feature Branches}\\[3pt]
+\resizebox{\textwidth}{!}{%
+\begin{tabular}{l r c c c c c c c c r}
+\toprule
+\textbf{Feature Branch Configuration} & \textbf{Dim ($d$)} & \textbf{4-Class Acc.} & \textbf{Macro F1} & \textbf{Phish Rec.} & \textbf{Benign FPR} & \textbf{HB FPR} & \textbf{LB FPR} & \textbf{Corpus AI Prov.} & \textbf{Errors} & \textbf{Convergence} \\
+\midrule
+Stylometric Only (TF-IDF $n$-grams) & $100{,}000$ & 95.98\% & 95.99\% & 97.41\% & 2.69\% & 2.81\% & 2.56\% & 98.39\% & $257 / 6{,}400$ & 365 iters (CPU) \\
+Semantic-XGB (DeBERTa-v3 Embeddings) & $768$ & \textbf{98.42\%} & \textbf{98.42\%} & \textbf{99.00\%} & 0.88\% & 0.81\% & 0.94\% & \textbf{99.34\%} & \textbf{101} $/ 6{,}400$ & 36 iters (CUDA) \\
+\textbf{Fused Anti-PLUTO (Dual-Branch)} & $\mathbf{100{,}768}$ & \textbf{98.42\%} & \textbf{98.42\%} & 98.94\% & \textbf{0.81\%} & \textbf{0.75\%} & \textbf{0.88\%} & \textbf{99.34\%} & \textbf{101} $/ 6{,}400$ & 36 iters (CPU) \\
+\bottomrule
+\\[-4pt]
+\multicolumn{11}{l}{\scriptsize $^*$Approximate per-message Wilson score 95\% confidence intervals ($z=1.95996$) for 4-class accuracy ($N = 6{,}400$): Stylometric Only: [95.48\%, 96.44\%]; Semantic-XGB: [98.09\%, 98.70\%]; Fused Anti-PLUTO: [98.09\%, 98.70\%].} \\
+\end{tabular}%
+}
+
+\vspace{0.35cm}
+\textbf{(B) Comparative 4-Cohort Test Confusion Matrices Demonstrating Feature Complementarity}\\[3pt]
+\begin{minipage}[t]{0.32\textwidth}
+\centering
+\textbf{Branch 1: Stylometric-Only ($100{,}000$-d)}\\[2pt]
+\footnotesize
+\begin{tabular}{l c c c c}
+\toprule
+& \multicolumn{4}{c}{\textbf{Predicted Class}} \\
+\cmidrule{2-5}
+\textbf{True Class} & \textbf{HB} & \textbf{HP} & \textbf{LB} & \textbf{LP} \\
+\midrule
+\textbf{Actual HB} & \textbf{1,532} & 44 & 23 & 1 \\
+\textbf{Actual HP} & 41 & \textbf{1,555} & 1 & 3 \\
+\textbf{Actual LB} & 38 & 9 & \textbf{1,521} & \textbf{32} \\
+\textbf{Actual LP} & 4 & 24 & \textbf{37} & \textbf{1,535} \\
+\bottomrule
+\end{tabular}
+\end{minipage}\hfill
+\begin{minipage}[t]{0.32\textwidth}
+\centering
+\textbf{Branch 2: Semantic-XGB ($768$-d)}\\[2pt]
+\footnotesize
+\begin{tabular}{l c c c c}
+\toprule
+& \multicolumn{4}{c}{\textbf{Predicted Class}} \\
+\cmidrule{2-5}
+\textbf{True Class} & \textbf{HB} & \textbf{HP} & \textbf{LB} & \textbf{LP} \\
+\midrule
+\textbf{Actual HB} & \textbf{1,568} & 13 & 19 & 0 \\
+\textbf{Actual HP} & 22 & \textbf{1,578} & 0 & 0 \\
+\textbf{Actual LB} & 20 & 1 & \textbf{1,565} & 14 \\
+\textbf{Actual LP} & 0 & 2 & 10 & \textbf{1,588} \\
+\bottomrule
+\end{tabular}
+\end{minipage}\hfill
+\begin{minipage}[t]{0.32\textwidth}
+\centering
+\textbf{Branch 3: Fused Anti-PLUTO ($100{,}768$-d)}\\[2pt]
+\footnotesize
+\begin{tabular}{l c c c c}
+\toprule
+& \multicolumn{4}{c}{\textbf{Predicted Class}} \\
+\cmidrule{2-5}
+\textbf{True Class} & \textbf{HB} & \textbf{HP} & \textbf{LB} & \textbf{LP} \\
+\midrule
+\textbf{Actual HB} & \textbf{1,570} & 12 & 18 & 0 \\
+\textbf{Actual HP} & 24 & \textbf{1,576} & 0 & 0 \\
+\textbf{Actual LB} & 21 & 1 & \textbf{1,565} & 13 \\
+\textbf{Actual LP} & 0 & 2 & 10 & \textbf{1,588} \\
+\bottomrule
+\end{tabular}
+\end{minipage}
+
+\vspace{0.15cm}
+\end{table*}
+
+The empirical results demonstrate that semantic representations provide the majority of the predictive performance, while stylometric features provide modest additional discrimination and false-positive suppression. Specifically, the ablation reveals five key findings:
+
+\textbf{Finding 1: Representation Drivers and the Dominance of Contextual Semantics.} Analyzing the feature branches reveals that the $768$-dimensional DeBERTa-v3 semantic embeddings drive primary classification performance, with Semantic-XGB achieving $98.42\%$ accuracy (95\% Wilson score CI: $[98.09\%, 98.70\%]$) and $101$ total errors ($6{,}299$ correct out of $6{,}400$) when evaluated independently, identical in raw accuracy to the full dual-branch system ($98.42\%$, $[98.09\%, 98.70\%]$). In contrast, Stylometric-Only ($100{,}000$-d TF-IDF) commits $257$ total errors across the $6,400$-email test set ($95.98\%$ accuracy, $[95.48\%, 96.44\%]$). The semantic representation eliminates $60.7\%$ of the misclassifications committed by stylometry alone ($257 \to 101$ errors), confirming that deep contextual representations of manipulative pretexts and social engineering intent provide the dominant predictive signal for threat identification.
+
+\emph{Why Semantics Outperforms Stylometrics for Machine Text Attribution:} A natural intuition in text analysis is that surface stylometrics (word and character n-grams, casing, punctuation, and function words) should be the primary vehicle for distinguishing human from machine text, while semantics should only capture topical intent. However, empirical evaluation demonstrates that DeBERTa-v3 achieves higher within-corpus authorial provenance attribution ($99.34\%$ vs. $98.39\%$). Three plausible linguistic and architectural factors may explain this behavior:
+\begin{enumerate}
+    \item \emph{LLMs as Stylistic Mimics}: Modern LLMs (such as GPT-4o, Claude 3.5, and LLaMA-3.1) are trained with extensive reinforcement learning from human feedback (RLHF) and direct preference optimization (DPO) to match human sentence length distributions, vocabulary diversity (Type-Token Ratio), and punctuation conventions. As a consequence, surface n-gram distributions may overlap substantially between professional human correspondence and synthetic emails.
+    \item \emph{Contextual Fluency vs. Human Disfluency}: DeBERTa-v3 does not merely classify semantic topics; its disentangled attention mechanism (separating content and relative position vectors) and replaced-token pre-training evaluate cross-token sequence predictability and discourse cohesion. Authentic corporate human emails (such as the Enron corpus) contain natural disfluencies: abrupt conversational shifts, fragmented clauses, pragmatic leaps, and unpunctuated sentences. In contrast, autoregressive sampling yields text that is statistically hyper-coherent and unnaturally uniform. DeBERTa-v3's attention heads may reflect this subtle distributional uniformity across the context window, which isolated n-gram counts cannot perceive.
+    \item \emph{Joint Optimization Across Intent and Provenance}: In the four-class classification manifold, threat intent (urgency, coercive authority, credential harvesting) may constitute an important separation axis. Because DeBERTa-v3 captures intent with high fidelity, the resulting representations create a structured embedding space where machine-generated benign and phishing emails separate cleanly from human distributions.
+\end{enumerate}
+
+\textbf{Finding 2: False Positive Suppression and Decision Boundary Regularization.} While semantic embeddings achieve high raw accuracy, the operational justification for dual-branch fusion lies in boundary regularization and false positive suppression. In enterprise email environments processing millions of messages daily, false alarms on legitimate business correspondence directly harm productivity. Stylometrics alone produces $86$ false alarms (FPR $= 2.69\%$), while Semantic-XGB produces $28$ false alarms (FPR $= 0.88\%$). Fused Anti-PLUTO suppresses total false alarms to $26$ (FPR $= 0.81\%$) and reduces Human Corporate Benign false alarms to $0.75\%$ ($12$ false alarms out of $1,600$ messages, compared to $13$ in Semantic-XGB and $45$ in stylometric-only). While dual-branch fusion yields a slightly higher multiclass ROC-AUC ($0.9970$ vs. $0.9968$), the performance difference relative to Semantic-XGB is modest.
+
+\textbf{Finding 3: Functional Specialization of Representations.} Inspection of the per-configuration confusion matrices (Table~\ref{tab:ablation}, Part~B) reveals complementary functional behaviors between the two representations. Rather than symmetric contributions to accuracy, the branches exhibit distinct strengths. Specifically, \emph{stylometrics captures authorial distribution signatures}: the stylometric-only model achieves $98.39\%$ accuracy in distinguishing human from machine text ($H_2$ task), confirming that autoregressive token sampling leaves measurable syntactic footprints in sub-word distributions and sentence-rhythm regularity. However, stylometrics is \emph{largely insensitive to malicious intent}: it struggles to separate LLM Benign from LLM Phishing (misflagging $\mathbf{32}$ LLM-benign emails as attacks and $\mathbf{37}$ LLM-phishing emails as benign, visible in the LB-LP cross-talk in Table~\ref{tab:ablation}, Part~B). Conversely, \emph{semantics drives intent discrimination}: DeBERTa-v3 models manipulative pretexts, urgency coercion, and social engineering context (reducing LLM-phishing false negatives to only $10$), but without stylometric features, it exhibits slightly higher false alarms on benign corporate mail ($13$ human benign misflagged as phishing). The dual-branch combination therefore achieves a practical operational benefit: retaining the high threat capture driven by the transformer while providing marginal false-positive suppression ($12$ human benign false alarms vs. $13$ in Semantic-XGB) and higher overall ROC-AUC ($0.9970$ vs. $0.9968$).
+
+\textbf{Finding 4: Error Set Overlap and Disagreement Analysis.} To evaluate whether dual-branch fusion catches a distinct population of errors or merely mirrors the semantic branch, we conducted a sample-level disagreement analysis across all $6,400$ unseen test emails. In four-class classification, the Semantic-XGB model commits $101$ errors ($6{,}299$ correct), exactly matching the Fused model's $101$ errors; crucially, the two models share $\mathbf{98\text{ identical errors}}$ (a $97.0\%$ error set intersection), with only $3$ errors unique to Semantic-XGB and $3$ unique to Fused. An exact two-sided McNemar test on the paired discordant observations ($b = 3, c = 3$) yields $p = 1.000$. No statistically significant difference was detected between the fused and Semantic-XGB predictions on the paired test set. We note, however, that with only six discordant observations between the two models, the test possesses limited sensitivity to detect extremely small performance differences. In binary phishing detection at $\tau = 0.50$, both models commit exactly $60$ total classification errors ($28$ false positives and $32$ false negatives for Semantic-XGB; $26$ false positives and $34$ false negatives for Fused), of which $\mathbf{57\text{ errors are completely identical}}$, with only $3$ boundary samples differing across the entire test set. This indicates that dual-branch fusion does not intercept an orthogonal category of threats; rather, stylometry acts as a localized boundary regularizer that shifts a small number ($3$) of boundary samples.
+
+\textbf{Finding 5: Threshold Sensitivity versus Stylometric Fusion.} An operational question is whether the false-positive reduction attributed to dual-branch fusion could be achieved simply by recalibrating the decision threshold $\tau$ on the semantic branch alone. At the symmetric threshold $\tau = 0.50$, Fused achieves an FPR of $0.81\%$ ($26$ false positives, $34$ false negatives) while Semantic-XGB produces an FPR of $0.88\%$ ($28$ false positives, $32$ false negatives), a difference of exactly two false-alarm emails. A post-hoc threshold sensitivity analysis on the held-out test predictions reveals that adjusting the decision cutoff on Semantic-XGB from $\tau = 0.50$ to $\mathbf{\tau = 0.54}$ drops the Semantic-XGB FPR to exactly $\mathbf{0.81\%}$ ($26$ false positives), matching the Fused false-alarm rate while maintaining a threat recall of $\mathbf{99.00\%}$ ($32$ false negatives, resulting in $58$ total binary errors compared to $60$ for Fused). We emphasize that this post-hoc sweep serves as a descriptive sensitivity scenario rather than an independently calibrated operational operating point (which, as formalized in Section~\ref{sec:cost_opt} and Equation~(\ref{eq:threshold_opt}), must be calibrated strictly on the validation partition to avoid test contamination). Furthermore, this finding specifically evaluates the \emph{Semantic-XGB} ablation configuration; operational deployments utilizing the \emph{Direct DeBERTa} head without XGBoost should establish their own calibrated thresholds on validation data. Nonetheless, this analysis confirms that the empirical false-positive advantage of dual-branch fusion over semantic representations alone can be approximated by a minor threshold adjustment ($\Delta \tau = +0.04$) without requiring the $100,000$-dimensional stylometric sparse transform.
+
+Finally, the convergence column reveals a notable difference: the stylometric XGBoost model required $365$ iterations ($\sim$2 hours on CPU) across a $100,000$-dimensional sparse matrix, while the semantic model converged in only $36$ iterations ($<$30 seconds on CUDA) due to the compact and highly separable $768$-d DeBERTa embedding space. The fused model inherited the fast semantic convergence, completing in $36$ iterations despite operating on the full $100,768$-dimensional space.
+
+\subsection{Experiment 2c: Provenance Baseline Comparison ($H_2$)}
+To situate the within-corpus provenance attribution performance against established AI-text detection approaches, we evaluated two reference baselines on the identical binary provenance test partition (Human vs. AI) used throughout the ablation study. We hypothesized that the RoBERTa-based OpenAI GPT-2 output detector (\texttt{openai-community/roberta-base-openai-detector}) \cite{solaiman2019release}, trained strictly on GPT-2-era outputs, would show substantially reduced sensitivity to contemporary commercial LLM text and a differing input format; the results below test this hypothesis. We compare this zero-shot baseline alongside a classical supervised baseline: a Logistic Regression classifier trained on the identical $100,000$-dimensional TF-IDF stylometric features used by the Anti-PLUTO branch (hyperparameters kept at standard untuned defaults, e.g., $C=1.0$, consistent with its role as a simple baseline). Input sequences to the RoBERTa model were the standard Anti-PLUTO masked canonical representations (truncated to the model's 512-token maximum), mapping model output index 0 to Fake (AI) and 1 to Real (Human), with a decision boundary at $\text{softmax}(p_{\text{Fake}}) \ge 0.50$. Because the zero-shot detector was evaluated on Anti-PLUTO's masked canonical representation rather than its native raw-text distribution, its result should be interpreted as performance under this standardized benchmark input protocol rather than as a general estimate of the detector's performance on unmodified email text.
+
+Crucially, this evaluation remains a within-corpus benchmark comparing detection methodologies on our historical-human versus modern-AI partition; it does not address the temporal confound (the lack of contemporary human writing), which is discussed separately in Section~\ref{sec:discussion}.
+
+Table~\ref{tab:provenance_baselines} summarizes the results. The Logistic Regression baseline ($98.41\%$ accuracy, $95\%$ CI $[98.07\%, 98.69\%]$) closely tracks the provenance performance of the Stylometric-XGB branch ($98.39\%$, reproduced from Table~\ref{tab:ablation}), showing that the $100,000$-dimensional TF-IDF representation supports strong within-corpus Human-vs-AI separation even with a linear decision boundary. Because Logistic Regression was optimized directly for binary provenance whereas Stylometric-XGB was trained on the four-cohort objective, these values should not be interpreted as a controlled classifier-head comparison. Conversely, the zero-shot RoBERTa detector underperformed the $50\%$ no-information baseline ($43.81\%$ accuracy, $95\%$ CI $[42.60\%, 45.03\%]$); a stratified label-mapping sanity check confirmed this was not an inverted-mapping artifact. This below-chance result suggests the detector's thresholded predictions were negatively associated with the benchmark labels in this corpus. This degradation is consistent with substantial model- and domain-distribution mismatch: the RoBERTa detector was trained on GPT-2 outputs versus WebText, whereas the Anti-PLUTO corpus contains structured email text generated by contemporary instruction-tuned models. This highlights a critical limitation of applying static, off-the-shelf AI detectors to dynamic, domain-specific tasks without fine-tuning.
+
+\begin{table}[!htbp]
+\centering
+\caption{Provenance Baseline Comparison ($H_2$) on the Frozen 6,400-Sample Test Partition}
+\label{tab:provenance_baselines}
+\renewcommand{\arraystretch}{1.2}
+\resizebox{\columnwidth}{!}{%
+\begin{tabular}{@{}llcccc@{}}
+\toprule
+\textbf{Detector Architecture} & \textbf{Methodology} & \textbf{Accuracy} & \textbf{Precision} & \textbf{Recall} & \textbf{F1} \\
+\midrule
+\multicolumn{6}{@{}l}{\textbf{Reference Baselines}} \\
+Logistic Regression (TF-IDF 100k-d) & Supervised, In-Domain & $98.41\%$ & $99.33\%$ & $97.47\%$ & $98.39\%$ \\
+RoBERTa-base OpenAI Detector & Zero-Shot, Pretrained & $43.81\%$ & $41.82\%$ & $31.66\%$ & $36.04\%$ \\
+\midrule
+\multicolumn{6}{@{}l}{\textbf{Anti-PLUTO (Reproduced from Table~\ref{tab:ablation})}} \\
+Stylometric-XGB (TF-IDF 100k-d) & Supervised, In-Domain & $98.39\%$ & $99.11\%$ & $97.66\%$ & $98.38\%$ \\
+Semantic-XGB (DeBERTa-v3 768-d) & Supervised, In-Domain & $99.34\%$ & $99.41\%$ & $99.28\%$ & $99.34\%$ \\
+\textbf{Fused Architecture} & \textbf{Supervised, In-Domain} & \textbf{99.34\%} & \textbf{99.44\%} & \textbf{99.25\%} & \textbf{99.34\%} \\
+\bottomrule
+\end{tabular}%
+}
+\vspace{1ex}
+\raggedright
+\footnotesize{\textit{Note:} Precision, recall, and F1 treat AI-generated email (LB + LP) as the positive class. Logistic Regression was fit only on the training partition after collapsing HB/HP $\rightarrow$ Human and LB/LP $\rightarrow$ AI.}
+\end{table}
+
+
+\subsection{Experiment 3: Threshold Sensitivity and Validation-Calibrated Operating Point}
+To evaluate cost-sensitive trade-offs, we constructed an operational threshold ladder on the unseen test partition, summarized in Table~\ref{tab:threshold_ladder}.
+
+\begin{table*}[!htbp]
+\caption{Decision Threshold Sensitivity Ladder on $6,400$ Unseen Test Emails ($3,200$ Benign, $3,200$ Phishing)}
+\label{tab:threshold_ladder}
+\centering
+\resizebox{\textwidth}{!}{%
+\begin{tabular}{c l c c c c c c}
+\toprule
+\textbf{Cutoff ($\tau$)} & \textbf{Sensitivity Scenario} & \textbf{Catch Rate (Recall)} & \textbf{Benign FPR} & \textbf{Precision} & \textbf{Macro F1} & \textbf{False Positives} & \textbf{Missed Attacks} \\
+\midrule
+\textbf{0.3500} & High-Sensitivity Point & \textbf{99.38\%} & 2.56\% & 97.49\% & 98.42\% & 82 & \textbf{20} \\
+\textbf{0.4000} & Moderate-Sensitivity Point & 99.22\% & 1.47\% & 98.54\% & 98.88\% & 47 & 25 \\
+\textbf{0.4500} & Balanced High-Recall Point & 99.09\% & 1.03\% & 98.97\% & 99.03\% & 33 & 29 \\
+\textbf{0.5000} & Symmetric Baseline Point & \textbf{98.94\%} & \textbf{0.81\%} & \textbf{99.19\%} & \textbf{99.06\%} & \textbf{26} & \textbf{34} \\
+\textbf{0.5114} & Youden's $J$ Validation Optimum & 98.91\% & 0.78\% & 99.22\% & 99.06\% & 25 & 35 \\
+\textbf{0.5500} & Moderate Low-FPR Point & 98.84\% & 0.66\% & 99.34\% & 99.09\% & 21 & 37 \\
+\textbf{0.6000} & Low-FPR Point & 98.75\% & 0.59\% & 99.40\% & 99.08\% & 19 & 40 \\
+\textbf{0.6500} & Very Low-FPR Point & \textbf{98.44\%} & \textbf{0.38\%} & \textbf{99.62\%} & \textbf{99.03\%} & \textbf{12} & \textbf{50} \\
+\textbf{0.6600} & Extreme Precision Point & 98.03\% & 0.38\% & 99.62\% & 98.82\% & 12 & 63 \\
+\bottomrule
+\end{tabular}%
+}
+\end{table*}
+
+\begin{figure}[!htbp]
+\centering
+\includegraphics[width=\columnwidth]{figures/roc_curve_operational.png}
+\caption{Operational ROC Curve highlighting sensitivity operating points (Youden's Index, $\tau=0.65$ Very Low-FPR Point, and $\tau=0.35$ High-Sensitivity Point).}
+\label{fig:roc_operational}
+\end{figure}
+
+\begin{figure}[!htbp]
+\centering
+\includegraphics[width=\columnwidth]{figures/threshold_tradeoff_curves.png}
+\caption{Performance metrics (Precision, Recall, F1, Accuracy, and FPR) as a function of the phishing decision threshold $\tau \in [0.0, 1.0]$.}
+\label{fig:threshold_tradeoffs}
+\end{figure}
+
+Figs.~\ref{fig:roc_operational} and \ref{fig:threshold_tradeoffs} illustrate the threshold dynamics. Crucially, by increasing the threshold from $\tau = 0.50$ to $\tau = 0.65$, false alarms were reduced by $\mathbf{53.8\%}$ (from $26$ down to only $12$ out of $3,200$ legitimate messages, dropping FPR to $\mathbf{0.38\%}$), while retaining a catch rate of $\mathbf{98.44\%}$. Conversely, setting $\tau = 0.35$ raises the catch rate to $\mathbf{99.38\%}$, leaving only $20$ missed attacks across the entire test set.
+
+\subsection{Experiment 4: External Industry Baselines Comparison (Offline Content-Only Benchmark)}
+We conducted an empirical benchmark comparing Anti-PLUTO against Apache SpamAssassin (v3.4.6) and Rspamd (v3.8.1) under an offline content-only protocol. All $6,400$ unseen test emails were reconstructed into full RFC 5322 MIME messages with standardized neutral transport headers and evaluated offline with external DNS and DNSBL lookups disabled. This protocol isolates pure textual and structural heuristic scoring under zero-hour conditions where external IP, domain reputation, and network telemetry are unavailable. Table~\ref{tab:external_baselines_master} presents the comparative results under this specified protocol.
+
+\begin{table*}[!htbp]
+\caption{Empirical Comparison: Anti-PLUTO vs. Industry-Standard Email Filters on $6,400$ RFC 5322 MIME Messages (Offline Content-Only Benchmark)}
+\label{tab:external_baselines_master}
+\centering
+\footnotesize
+\resizebox{0.88\textwidth}{!}{%
+\begin{tabular}{l c c c}
+\toprule
+\textbf{Operational Evaluation Dimension} & \textbf{SpamAssassin (v3.4+)} & \textbf{Rspamd (v3.8.1)} & \textbf{Anti-PLUTO (XGBoost)} \\
+\midrule
+\textbf{Overall Phishing Recall} & 0.00\% ($0/3{,}200$) & 1.12\% ($36/3{,}200$) & \textbf{98.94\%} ($3{,}166/3{,}200$) \\
+\textbf{Human Phishing Recall} & 0.00\% ($0/1{,}600$) & 2.12\% ($34/1{,}600$) & \textbf{98.50\%} ($1{,}576/1{,}600$) \\
+\textbf{LLM Phishing Recall} & 0.00\% ($0/1{,}600$) & 0.12\% ($2/1{,}600$) & \textbf{99.38\%} ($1{,}590/1{,}600$) \\
+\textbf{LLM Phishing Bypass Rate} & 100.00\% ($1{,}600/1{,}600$) & 99.88\% ($1{,}598/1{,}600$) & \textbf{0.62\%} ($10/1{,}600$) \\
+\textbf{Benign False Positive Rate} & \textbf{0.00\%} ($0/3{,}200$) & 0.06\% ($2/3{,}200$) & 0.81\% ($26/3{,}200$) \\
+\textbf{Human Benign False Alarms} & \textbf{0} / $1{,}600$ & 2 / $1{,}600$ & 12 / $1{,}600$ (0.75\%) \\
+\textbf{LLM Benign False Alarms} & \textbf{0} / $1{,}600$ & \textbf{0} / $1{,}600$ & 14 / $1{,}600$ (0.87\%) \\
+\textbf{Phishing Precision} & N/A & 94.74\% & \textbf{99.19\%} \\
+\textbf{Phishing F1-Score} & 0.00\% & 2.22\% & \textbf{99.06\%} \\
+\textbf{Derived Binary Accuracy}$^*$ & 50.00\% & 50.53\% & \textbf{99.06\%} \\
+\midrule
+\textbf{Mean / Amortized Latency} & 5.046\text{ ms} & 178.412\text{ ms} & 0.133\text{ ms}$^\dagger$ (Classifier Batch Duration) / 62.23\text{ ms}$^\ddagger$ (end-to-end) \\
+\textbf{Median Latency (P50)} & 2.809\text{ ms} & 81.221\text{ ms} & N/A$^\dagger$ (Classifier Batch Duration) \\
+\textbf{95th-Percentile Latency (P95)} & 17.006\text{ ms} & 289.726\text{ ms} & N/A$^\dagger$ (Classifier Batch Duration) \\
+\textbf{Filtering Throughput} & 198\text{ msgs/s} & 5.6\text{ msgs/s} & 7,497\text{ msgs/s}$^\dagger$ / 16.1\text{ msgs/s}$^\ddagger$ \\
+\textbf{Total Benchmark Duration} & 32.7\text{ s} & 1,142.0\text{ s} (19.0 min) & 0.85\text{ s}$^\dagger$ \\
+\bottomrule
+\\[-4pt]
+\multicolumn{4}{l}{\scriptsize $^*$SpamAssassin and Rspamd are binary spam/ham engines; binary accuracy is derived by mapping binary classifications (spam $\to$ Human Phishing, ham $\to$ Human Benign).} \\
+\multicolumn{4}{l}{\scriptsize $^\dagger$Anti-PLUTO classifier latency ($0.133\text{ ms}$) is an amortized per-message cost computed from vectorized batch evaluation ($0.85\text{ s} / 6{,}400$ pre-computed feature vectors);} \\
+\multicolumn{4}{l}{\scriptsize \phantom{$^\dagger$}per-sample latency percentiles (P50/P95) are not applicable to batch execution. For unbatched serial per-sample invocation overhead, see Table~\ref{tab:multi_model_benchmark} ($0.213\text{ ms}$).} \\
+\multicolumn{4}{l}{\scriptsize $^\ddagger$Full end-to-end per-email pipeline latency ($62.23\text{ ms}$): MIME ingestion, PII masking, feature extraction, and batched DeBERTa GPU forward pass (\S\ref{sec:zero_day}).}
+\end{tabular}%
+}
+\end{table*}
+
+
+\subsubsection{Deconstructing Heuristic Limitations Under Zero-Hour Conditions}
+Under the specified offline content-only benchmark, the empirical data exposes the vulnerability of static heuristic rules when network reputation is neutral:
+\begin{itemize}
+    \item \textbf{SpamAssassin} flagged 0 attacks ($0.00\%$ recall across all $3,200$ phishing emails), exhibiting a $100.00\%$ bypass rate under content-only evaluation.
+    \item \textbf{Rspamd} flagged $36$ attacks ($1.12\%$ overall recall), missing $1,598$ of the $1,600$ generative attacks ($99.88\%$ bypass rate).
+\end{itemize}
+\textbf{Root Cause Analysis and Production Scope:} It is essential to emphasize that these results do not indicate that SpamAssassin or Rspamd are ineffective in full production deployments. In live enterprise email pipelines, modern Secure Email Gateways derive substantial discriminative efficacy from multi-layered network telemetry: dynamic IP blacklists (DNSBL/RBL), URI reputation feeds (SURBL), cryptographic SPF/DKIM verification, and years of localized Bayesian corpus tuning. Operating legacy engines with live network queries against historical or synthetic test messages would introduce temporally mismatched external reputation signals. Historical URLs would be evaluated using their present-day DNS and reputation state rather than the state available when the original message was observed, while synthetic placeholder domains intentionally possess no malicious reputation history. The experiment therefore disabled or rendered unavailable external DNS-, reputation-, and network-dependent checks in the offline configuration (\texttt{spamd -L} for SpamAssassin and DNS lookups disabled in Rspamd) to isolate content-layer discrimination under the specified zero-hour threat model where external reputation telemetry is neutral or uninformative.
+
+\emph{Why Did SpamAssassin Miss Human Phishing as Well?} Notably, in Table~\ref{tab:external_baselines_master}, SpamAssassin missed not only generative LLM attacks ($0 / 1{,}600$), but also authentic historical human phishing ($0 / 1{,}600$ caught from the Nazario archive). This complete bypass stems from five compounding architectural factors:
+\begin{enumerate}
+    \item \emph{Standardized Neutral Transport Headers}: In real-world environments, raw spam and phishing messages frequently exhibit transmission anomalies (such as forged \texttt{Received} hops, missing \texttt{Message-ID}, mismatched dates, or unresolvable HELO hostnames). To eliminate confounding transmission artifacts and isolate textual discrimination, all test emails were packaged in standardized, RFC 5322 compliant MIME envelopes with valid neutral headers (\texttt{user@example.com}, deterministic message IDs, and synchronized timestamps). This neutralized dozens of SpamAssassin's highest-weight transport penalty rules (e.g., \texttt{MISSING\_MID}, \texttt{INVALID\_DATE}, \texttt{FORGED\_RCVD\_HELO}).
+    \item \emph{Disabled Network and Reputation Lookups}: Running SpamAssassin in strict local mode (\texttt{spamd -L}) and Rspamd with DNS queries deactivated completely rendered external DNSBL queries, Razor2 distributed checksums, Pyzor hash checks, and SURBL/URIBL domain reputation lookups unavailable. In production, these real-time network feeds account for the vast majority of phishing interceptions.
+    \item \emph{The 5.0 Spam Score Threshold}: SpamAssassin requires a cumulative heuristic score of at least $5.0$ to classify a message as spam. Human phishing from the Nazario corpus predominantly consists of terse, direct account verification requests (e.g., ``Your account access is restricted; click here to verify''). Without bad header penalties and without live domain blacklist hits, pure body regexes (such as \texttt{HTML\_MESSAGE} or generic banking keywords) typically accumulate only $0.5$ to $2.0$ points, failing to reach the mandatory $5.0$ threshold.
+    \item \emph{Temporal Decay of Historical URL Regexes}: The Nazario phishing corpus dates from 2005--2007. Modern SpamAssassin rule distributions continually deprecate twenty-year-old lure domains and obsolete phishing patterns in favor of active contemporary threats, meaning static regexes find zero exact matches on vintage lures.
+    \item \emph{Absence of Local Bayesian Pre-Training}: In our controlled test harness, SpamAssassin operated with a pristine, unprimed Bayesian database. In production environments, administrators continuously train the Bayes engine on organization-specific ham and spam corpora, which provides significant baseline uplift.
+\end{enumerate}
+When evaluated strictly on content without external network queries, legacy heuristic rules scored generative phishing between $0.5$ and $3.5$ points, falling well below the mandatory rejection thresholds ($5.0$ for SpamAssassin, $15.0$ for Rspamd). Because LLMs generate prose devoid of orthographic errors or malformed MIME tags, static rule-based filters lack discriminative trigger signals. In contrast, Anti-PLUTO directly models lexical distributions and contextual semantics, intercepting $99.38\%$ of generative attacks under identical content-only conditions, which approximates the content-analysis component of zero-hour conditions where domain reputation is neutral or compromised. Anti-PLUTO is therefore conceived not as a wholesale replacement for mature gateway suites, but as a specialized upstream content-inspection module operating within a defense-in-depth architecture.
+
+\subsubsection{Gateway Latency and Throughput}
+On pre-computed feature vectors, Anti-PLUTO's classifier stage evaluated the $6,400$ test emails in $0.85\text{ seconds}$ ($7{,}497\text{ msgs/s}$). When evaluating the complete pipeline (MIME parsing, PII masking, feature extraction, and batched GPU embedding), end-to-end processing requires $62.23\text{ ms}$ per email ($16.1\text{ msgs/s}$), compared to $5.046\text{ ms}$ ($198\text{ msgs/s}$) for SpamAssassin and $178.412\text{ ms}$ ($5.6\text{ msgs/s}$) for Rspamd.
+
+\textbf{Latency Breakdown by Pipeline Stage:} It is important to clarify the scope of the reported $0.133\text{ ms}$ per-email figure. This measurement reflects \emph{amortized classifier batch duration only}: the time to concatenate pre-extracted TF-IDF and DeBERTa feature vectors and execute an XGBoost forward pass across the pre-computed $6{,}400$ test batch ($0.85\text{ s} / 6{,}400 \approx 0.133\text{ ms}$/vector). Because this benchmark evaluates the feature matrix monolithically, individual latency percentiles (P50 and P95) cannot be measured for this batch step. For serial per-sample invocation overhead without batching, we refer to Table~\ref{tab:multi_model_benchmark} ($0.213\text{ ms}$). The full Anti-PLUTO production pipeline encompasses three additional upstream stages whose measured decomposition totals $62.23\text{ ms}$ per email:
+\begin{enumerate}
+    \item \textbf{Ingestion and Masking} (RFC 5322 MIME parse, HTML strip, NER-based PII masking via spaCy): measured at $34.16\text{ ms}$ per email.
+    \item \textbf{Stylometric Feature Extraction} (TF-IDF sparse transform on 100,000-d vocabulary): measured at $1.18\text{ ms}$ per email.
+    \item \textbf{Semantic Embedding} (DeBERTa-v3-small forward pass, batched): measured at $26.70\text{ ms}$ per email (and $0.18\text{ ms}$ for XGBoost classification unbatched).
+\end{enumerate}
+For production deployments, the semantic embedding stage dominates end-to-end latency; however, it is fully batchable and GPU-acceleratable. The $0.133\text{ ms}$ amortized inference figure represents the \emph{incremental} cost of the classification decision itself once embeddings are available, which is the operationally relevant metric for gateway integration where DeBERTa embeddings can be pre-computed asynchronously upstream. The full operational end-to-end latency remains $62.23\text{ ms}$ per message.
+
+\subsection{Experiment 5: Zero-Day Cross-Model Generalization (Held-Out Generator Evaluation)}
+\label{sec:zero_day}
+
+An important methodological question in synthetic email detection is out-of-distribution transfer: does an ensemble trained on commercial generative models memorize idiosyncratic stylistic artifacts of those specific architectures, or does it capture transferable markers of machine generation and social engineering? In machine learning for AI text security, this is formulated as a \textbf{Held-Out Generator Evaluation} (or cross-model generalization) protocol. In-distribution evaluations, even with disjoint human seeds, risk overfitting to generator-specific token distributions, vocabulary preferences, or punctuation patterns characteristic of training architectures. Holding one or more generator families completely out of training isolates whether the representations capture universal autoregressive properties or merely memorize generator signatures.
+
+To provide an empirical answer under strict out-of-distribution conditions across both model architecture and inference infrastructure, generation was migrated from Azure AI Foundry to OpenRouter, with zero seed overlap. While the evaluation suite originally targeted Google Gemini and Alibaba Qwen, persistent safety guardrail refusals by Gemini on adversarial phishing prompts necessitated substituting it with \textbf{DeepSeek-V4} (an entirely distinct model generation from the DeepSeek-V3.2 deployed during training), paired with \textbf{Alibaba Qwen-3 (30B)}. The resulting suite of $2{,}000$ contemporary emails ($1{,}000$ benign, $1{,}000$ phishing) was governed by Prompt V3.1 (generation date: August 15-20, 2026; parameters: \texttt{temperature=0.7}, \texttt{top\_p=0.9}, \texttt{max\_tokens} set to provider default), incorporating modern enterprise scenarios (cloud identity management, automated CI/CD pipelines, SaaS project management) with calibrated link density ($43.5\%$ of phishing and $14.8\%$ of benign emails contain actionable \texttt{[URL]} placeholders). All samples were ingested through the live five-stage pipeline and evaluated across the frozen model checkpoints without retraining or domain adaptation. Table~\ref{tab:zero_day_master} presents the zero-day generalization results.
+
+\begin{table*}[!htbp]
+\caption{Zero-Day Evaluation: Cross-Model Generalization across $2{,}000$ Unseen Emails from Alibaba Qwen-3 (\texttt{qwen/qwen-3-30b-instruct}) and DeepSeek-V4 (\texttt{deepseek/deepseek-v4-chat})}
+\label{tab:zero_day_master}
+
+\centering
+\footnotesize
+\resizebox{\textwidth}{!}{%
+\begin{tabular}{l c c c}
+\toprule
+\textbf{Operational Evaluation Dimension / Metric} & \textbf{Anti-PLUTO (XGBoost Fused)} & \textbf{Anti-PLUTO (Random Forest)} & \textbf{Semantic-Only (DeBERTa Direct)} \\
+\midrule
+\textbf{Overall Phishing Catch Rate (Recall)} & \textbf{67.80\%} ($678 / 1{,}000$) & \textbf{69.30\%} ($693 / 1{,}000$) & \textbf{68.30\%} ($683 / 1{,}000$) \\
+\quad \textbf{Alibaba Qwen-3 (30B) Catch Rate} & 72.20\% ($361 / 500$) & 74.00\% ($370 / 500$) & 73.00\% ($365 / 500$) \\
+\quad \textbf{DeepSeek-V4 Catch Rate} & 63.40\% ($317 / 500$) & 64.60\% ($323 / 500$) & 63.60\% ($318 / 500$) \\
+\midrule
+\textbf{Actionable Linked Phishing Catch Rate} & \textbf{95.63\%} ($416 / 435$) & \textbf{96.55\%} ($420 / 435$) & \textbf{95.86\%} ($417 / 435$) \\
+\textbf{Linkless / Conversational Phishing Catch Rate} & \textbf{46.37\%} ($262 / 565$) & \textbf{48.32\%} ($273 / 565$) & \textbf{47.08\%} ($266 / 565$) \\
+\midrule
+\textbf{Benign False Alarm Rate (FPR)} & \textbf{7.50\%} ($75 / 1{,}000$) & \textbf{7.70\%} ($77 / 1{,}000$) & \textbf{7.50\%} ($75 / 1{,}000$) \\
+\quad \textbf{DeepSeek-V4 Benign FPR} & 3.40\% ($17 / 500$) & 3.80\% ($19 / 500$) & 3.60\% ($18 / 500$) \\
+\quad \textbf{Alibaba Qwen-3 Benign FPR} & 11.60\% ($58 / 500$) & 11.60\% ($58 / 500$) & 11.40\% ($57 / 500$) \\
+\quad \textbf{Linked Benign FPR} & 20.27\% ($30 / 148$) & 23.65\% ($35 / 148$) & 23.65\% ($35 / 148$) \\
+\quad \textbf{Linkless Benign FPR} & 5.28\% ($45 / 852$) & 4.93\% ($42 / 852$) & 4.69\% ($40 / 852$) \\
+\midrule
+\textbf{Phishing Precision} & \textbf{90.04\%} & \textbf{90.00\%} & \textbf{90.11\%} \\
+\textbf{Overall Binary Accuracy} & \textbf{80.15\%} ($1{,}603 / 2{,}000$) & \textbf{80.80\%} ($1{,}616 / 2{,}000$) & \textbf{80.40\%} ($1{,}608 / 2{,}000$) \\
+\textbf{Phishing F1-Score} & \textbf{77.35\%} & \textbf{78.31\%} & \textbf{77.70\%} \\
+\textbf{Binary ROC-AUC} & \textbf{0.8366} & \textbf{0.8455} & \textbf{0.8799} \\
+\midrule
+\textbf{Synthetic Provenance Sensitivity / AI Recall ($H_2$)} & \textbf{93.95\%} ($1{,}879 / 2{,}000$) & \textbf{93.90\%} ($1{,}878 / 2{,}000$) & \textbf{96.20\%} ($1{,}924 / 2{,}000$) \\
+\quad \textbf{AI Recall on Synthetic Phishing} & \textbf{99.20\%} ($992 / 1{,}000$) & \textbf{99.20\%} ($992 / 1{,}000$) & \textbf{99.60\%} ($996 / 1{,}000$) \\
+\quad \textbf{AI Recall on Synthetic Benign Mail} & \textbf{88.70\%} ($887 / 1{,}000$) & \textbf{88.60\%} ($886 / 1{,}000$) & \textbf{92.80\%} ($928 / 1{,}000$) \\
+\midrule
+\textbf{4-Class Overall Accuracy} & \textbf{74.55\%} ($1{,}491 / 2{,}000$) & \textbf{75.15\%} ($1{,}503 / 2{,}000$) & \textbf{76.75\%} ($1{,}535 / 2{,}000$) \\
+\bottomrule
+\end{tabular}%
+}
+\end{table*}
+
+\subsubsection{Key Insights from Zero-Day Generalization}
+The zero-day benchmark highlights four key observations:
+
+\textbf{1. Transferability of Synthetic Authorship Markers ($H_2$ Sensitivity):} 
+Because the zero-day test suite is comprised entirely of synthetic emails synthesized by held-out models (Qwen-3 and DeepSeek-V4, $1{,}000$ benign, $1{,}000$ phishing), the $93.95\%$ metric represents \emph{synthetic provenance sensitivity} (AI detection recall), measuring the proportion of machine-generated emails correctly flagged as synthetic ($s_{\text{AI}} \ge 0.50$, where $s_{\text{AI}}$ denotes the raw uncalibrated AI provenance score; approximate 95\% Wilson score CI: $[92.82\%, 94.91\%]$). On the zero-day phishing cohort specifically, $99.20\%$ ($992$ out of $1{,}000$ attacks, 95\% Wilson score CI: $[98.43\%, 99.59\%]$) were recognized as machine-generated. While evaluating true two-sided attribution accuracy requires matched contemporary human-authored controls (an acknowledged area for future benchmark expansion), these results demonstrate what happens when generators are held out: autoregressive token sampling leaves structural characteristics in sub-word distributions and contextual fluency that persist across unseen model architectures.
+
+\textbf{2. Deconstruction of False Negatives and Provenance vs. Intent Generalization:} 
+Inspecting the four-class confusion matrix reveals where false negatives land: out of $322$ missed phishing emails, $\mathbf{315}$ were assigned to Class 2 (\emph{LLM Benign}), while only $7$ were misclassified as human emails. This reveals an informative pattern: the detector successfully recognized that the communication was machine-generated ($99.20\%$ synthetic recall on threats), but failed to identify the manipulative social engineering intent within the novel generation style. Because modern LLMs craft subtle, polite, conversational pretexts (e.g., rescheduling vendor meetings or requesting contract reviews via email reply), the classifier interpreted the payload as benign enterprise collaboration. Rather than demonstrating formal disentanglement (which would require a factorial design independently varying provenance and intent across matched contemporary human and AI controls), the experiment provides empirical evidence that provenance-sensitive detection transfers more successfully across unseen generators ($93.95\%$ overall sensitivity, $99.20\%$ on threats) than malicious-intent discrimination ($67.80\%$ overall, $46.37\%$ on linkless conversational fraud) under substantial prompt and payload shift.
+
+\textbf{3. Generalization Gap: Actionable Links vs. Conversational Fraud:} 
+While in-distribution LLM phishing recall reached $99.38\%$, the zero-day threat catch rate dropped to $67.80\%$ (approximate 95\% Wilson score CI: $[64.84\%, 70.62\%]$), demonstrating a significant generalization gap under cross-model and prompt distribution shift. Crucially, this drop is bifurcated by payload mechanics: when an attack contained an actionable call-to-action link (\texttt{[URL]}), Anti-PLUTO maintained a high catch rate of $\mathbf{95.63\%}$ ($416$ out of $435$, 95\% Wilson score CI: $[93.28\%, 97.19\%]$). In sharp contrast, on linkless, purely conversational social engineering (executive impersonation, gift card requests, payroll wire rerouting via direct reply), the catch rate dropped to $\mathbf{46.37\%}$ ($262$ out of $565$, 95\% Wilson score CI: $[42.30\%, 50.49\%]$). 
+
+\emph{Data Diversity and Operational Mitigations:} This drop in recall on linkless attacks represents an important negative finding that highlights a key limitation of supervised synthetic threat detection: the classification boundary is constrained by training prompt diversity. In this study, training generation was bounded by API costs and compute runtime, relying on variations of a single core scenario prompt. When unseen models (Qwen-3, DeepSeek-V4) generated conversational lures under Prompt V3.1 without overt urgency or links, the semantic branch frequently classified them as benign text. To address conversational bypasses in production, organizations might explore candidate defense-in-depth policies, such as conditional threshold adjustment or specialized conversational scrutiny when the AI provenance score $s_{\text{AI}}$ exceeds a candidate threshold. Such policies require validation on representative gateway traffic, and the raw provenance score should not be interpreted as a calibrated probability. These results indicate that broader training-data diversity is likely important for reducing this generalization gap, requiring future training sets to encompass broader prompt structures, multi-turn conversational pretexts, and additional model families.
+
+\textbf{4. Operational Precision and End-to-End Latency Profile:} 
+On this balanced zero-day benchmark, phishing-class precision was $\mathbf{90.04\%}$. Timing the full execution pipeline on a local CUDA GPU revealed an end-to-end latency of $\mathbf{62.23\text{ ms per email}}$ ($16.1\text{ msgs/s}$), comprising $34.16\text{ ms}$ for ingestion, Unicode cleaning, and PII masking, $1.18\text{ ms}$ for $100{,}000$-d TF-IDF extraction, $26.70\text{ ms}$ for batched DeBERTa-v3 GPU forward pass, and $0.18\text{ ms}$ for XGBoost classification. This latency profile is compatible with asynchronous mail gateway processing.
+
+% ==============================================================================
+% SECTION VIII: PRODUCTION SERVING & INTEGRATION
+% ==============================================================================
+\section{Production Serving and Gateway Integration}
+\label{sec:serving}
+
+\subsection{REST API Service Architecture and Multi-Mode Flags}
+To operationalize Anti-PLUTO, we engineered an asynchronous REST API service built with FastAPI and Uvicorn (\texttt{antipluto.api}). The service exposes four core endpoints:
+\begin{enumerate}
+    \item \texttt{POST /api/v1/predict}: Ingests structured JSON payloads containing email subject, body text, and an optional representation mode flag (\texttt{mode: "fusion" | "semantic" | "stylometric"}).
+    \item \texttt{POST /api/v1/predict/raw}: Ingests raw RFC 5322 MIME byte streams (\texttt{message/rfc822}) or multipart \texttt{.eml} file uploads directly from Mail Transfer Agents (e.g., Postfix, Exim, Sendmail), supporting dynamic mode selection via query parameter (\texttt{?mode=semantic}).
+    \item \texttt{GET /api/v1/health}: Health-check endpoint reporting service status, active classification head, device execution target (CUDA or CPU), and available representation modes (\texttt{["fusion", "semantic", "stylometric"]}).
+    \item \texttt{GET /docs}: Interactive OpenAPI / Swagger user interface for interactive inspection and testing.
+\end{enumerate}
+
+\subsection{Non-Blocking Threadpool Dispatching and Dynamic Mode Routing}
+Because extracting $100,000$-d TF-IDF sparse vectors and executing forward passes through DeBERTa-v3 and XGBoost are CPU/GPU-intensive operations, executing them directly inside the ASGI event loop would block concurrent network requests. Anti-PLUTO dispatches prediction workloads asynchronously to a dedicated worker threadpool:
+\begin{center}
+\small
+\texttt{response = await asyncio.to\_thread(} \\
+\texttt{\quad service.predict, subject, body, effective\_mode)}
+\end{center}
+Inside \texttt{InferenceService}, execution routes dynamically based on the requested representation mode:
+\begin{itemize}
+    \item \textbf{Fusion Mode (\texttt{fusion}):} Extracts both TF-IDF ($100,000$-d) and DeBERTa ($768$-d) vectors and executes the trained fusion head.
+    \item \textbf{Semantic Mode (\texttt{semantic}):} Dispatches directly to the fine-tuned DeBERTa-v3 classification head, bypassing stylometric extraction completely and returning predictions in $460\text{ ms}$ (CLI) to $62\text{ ms}$ (batched API).
+    \item \textbf{Stylometric Mode (\texttt{stylometric}):} Bypasses transformer forward passes entirely, evaluating TF-IDF features via the standalone linear model in $39.3\text{ ms}$ on pure CPU.
+\end{itemize}
+This architecture preserves event-loop responsiveness, enabling the API to handle high concurrent connection volumes without request timeouts while offering per-request architectural flexibility.
+
+\subsection{Command-Line Interface and Gateway Daemon Configuration}
+To facilitate integration into automated mail security pipelines, Anti-PLUTO provides a unified Click CLI interface (\texttt{antipluto}):
+\begin{itemize}
+    \item \textbf{Gateway Daemon Execution (\texttt{antipluto serve}):} Administrators can launch the production REST API server with a configurable default representation mode, active classifier head, host, and port:
+    \begin{center}
+    \small
+    \texttt{antipluto serve --mode semantic --classifier xgboost --port 8000}
+    \end{center}
+    \item \textbf{Ad-Hoc Message Classification (\texttt{antipluto predict}):} Enables terminal-level testing and mail filtering scripts:
+    \begin{center}
+    \small
+    \texttt{antipluto predict --file email.eml --mode stylometric}
+    \end{center}
+\end{itemize}
+
+
+\subsection{Portable ONNX Graph Export}
+To facilitate deployment in heterogeneous enterprise runtimes lacking Python dependencies, Anti-PLUTO includes automated ONNX export functionality (\texttt{antipluto.classifier.exporter}):
+\begin{itemize}
+    \item \textbf{DeBERTa-v3 Backbone:} Exported via PyTorch dynamo targeting ONNX opset 18 with external tensor storage (\texttt{deberta\_cls.onnx.data}), supporting dynamic sequence lengths and batch dimensions.
+    \item \textbf{Classification Heads:} Exported via \texttt{skl2onnx} and \texttt{onnxmltools} to optimized ONNX computational graphs (\texttt{xgboost\_fusion.onnx}, \texttt{rf\_fusion.onnx}, \texttt{mlp\_fusion.onnx}, \texttt{cnn\_fusion.onnx}), enabling portable optimized inference via Microsoft's ONNX Runtime in C++, C\#, Go, or Rust.
+\end{itemize}
+
+% ==============================================================================
+% SECTION IX: DISCUSSION & OPERATIONAL REALITIES
+% ==============================================================================
+\section{Discussion, Limitations, and Operational Realities}
+\label{sec:discussion}
+
+While Anti-PLUTO achieves high accuracy on the curated evaluation partitions, deploying machine learning classifiers into live email streams exposes several practical challenges. In this section, we analyze these operational constraints and discuss potential mitigations:
+
+\subsection{Temporal Concept Drift and Modern Transactional Anomalies}
+During informal qualitative observations on contemporary enterprise inboxes (e.g., modern Google Workspace and Microsoft 365 environments), we observed that specific legitimate automated communications, such as Spotify one-time password (OTP) verification codes, Revolut bank statements, and Stripe payment receipts, were intermittently flagged as suspicious by the classifier. 
+
+\subsubsection{Root Cause Analysis: Historical Distributional Shift}
+This behavior illustrates \textbf{Out-of-Distribution (OOD) temporal concept drift} \cite{gama2014conceptdrift, pendlebury2019tesseract}. The human benchmark corpora used in this study (Enron, Nazario, TREC) date from 1998 to 2022:
+\begin{enumerate}
+    \item \textbf{Short-Text Low-Entropy Disparity:} Modern OTP verification emails typically contain only 20--50 words dominated by phrases such as ``Your single-use verification code is: 482910. This code expires in 10 minutes. If you did not request this, secure your account immediately.'' In early 2000s datasets, short messages with high urgency modifiers, isolated numeric tokens, and credential-related phrases were almost exclusively malicious phishing or spam. Consequently, models trained on historical priors associate programmatic urgency tokens with deception heuristics.
+    \item \textbf{Absence of Programmatic Transactional Archetypes:} Modern template-driven transactional emails (automated financial portfolio summaries, multi-factor authentication pushes, SaaS invoice receipts) did not exist in human-to-human corporate correspondence corpora like Enron.
+    \item \textbf{Formatting Asymmetry:} Modern transactional emails are structured as clean HTML templates dominated by large call-to-action buttons, legal disclaimers, and minimal prose. When stripped to raw text, they lack the conversational syntactic fluidity of human correspondence, triggering anomalies in the stylometric and semantic branches.
+    \item \textbf{Historical Corpus Constraints and Temporal Confounding:} The availability of large, publicly shareable contemporary corporate-email corpora is constrained by privacy, confidentiality, and legal considerations, which has historically restricted academic benchmarks to established public repositories. Consequently, this study follows common literature practice by utilizing public historical archives (Enron from 2001, Nazario from 2005--2007, and TREC 2007). While the zero-day experiment (\S\ref{sec:zero_day}) provides evidence that learned representations transfer across unseen contemporary generators, cross-model transfer is not the same thing as temporal validation against contemporary human writing. The historical-human versus contemporary-human confound therefore remains an unresolved empirical limitation. Validating true authorship invariance across eras requires contemporary, domain-matched human-AI email benchmarks, which remain an open resource need for the research community.
+\end{enumerate}
+
+\subsubsection{Potential Mitigations: Domain Adaptation and Active Learning}
+To reduce transactional false positives in operational settings without compromising phishing catch rates, practical deployments could consider several strategies:
+\begin{itemize}
+    \item \textbf{Tenant-Level Calibration and Adaptation:} While a model trained on benchmark data provides an initial baseline for cold-start environments, operational deployments benefit from adapting decision thresholds or training localized adapter layers on an organization's specific email traffic.
+    \item \textbf{Feedback Loops and Active Learning:} When benign transactional notifications trigger false alarms, anonymized samples can be ingested into a retraining pool as hard negatives, adjusting classification boundaries over time.
+\end{itemize}
+
+\subsection{Defense-in-Depth: Pre-Classification Heuristics and Metadata Filtering}
+In practical email security architectures, content-based classifiers operate alongside transport- and protocol-level mechanisms within a defense-in-depth pipeline:
+\begin{itemize}
+    \item \textbf{Cryptographic Authentication Pre-Filters:} Automated transactional services typically deploy email authentication protocols. When an incoming message originates from an authorized IP with valid SPF alignment, a valid cryptographic DKIM signature, and a passing DMARC policy from a reputable domain, the gateway can apply adjusted scoring thresholds to avoid unnecessary false alarms. However, we note that threat actors increasingly abuse legitimate infrastructure (e.g., compromised SendGrid or Mailgun accounts); therefore, cryptographic alignment alone does not guarantee benign intent, but rather provides a structural routing signal.
+    \item \textbf{Structural Header Routing:} Automated communications often contain RFC-standardized headers such as \texttt{Auto-Submitted: auto-generated} (RFC 3834) and \texttt{Precedence: bulk} or \texttt{list}. Mail filters can leverage these structural headers to route notifications through specialized rules before running deep content analysis.
+\end{itemize}
+
+\subsection{Deployment Trade-Offs: Semantic-Only, Stylometric, and Fusion Modes}
+Our ablation results (Section~\ref{sec:ablation}) indicate that a full dual-branch architecture is not strictly required for every operational environment. Different organizations face different trade-offs among latency, memory usage, and hardware availability:
+\begin{enumerate}
+    \item \textbf{Semantic-Only Deployment:} In high-throughput mail gateways, feature extraction overhead directly impacts message queue concurrency. The stylometric branch requires maintaining a $100{,}000$-token vocabulary index in memory and computing sparse transforms for every incoming message. As shown in Finding 5 of the ablation study, a post-hoc sensitivity adjustment on the Semantic-XGB ablation model to $\tau = 0.54$ yields the same $0.81\%$ false positive rate ($26$ false alarms) as the fused model, with a slightly higher threat catch rate ($99.00\%$ vs. $98.94\%$). In production, the Direct DeBERTa mode bypasses XGBoost entirely, executing inference in a single forward pass. For gateways with GPU acceleration where lower memory usage and simpler pipelines are desirable, running DeBERTa-v3 alone provides an effective operational configuration without stylometric feature extraction.
+    \item \textbf{Stylometric-Only Deployment:} Organizations deploying on low-power mail servers or edge appliances without GPU hardware can run the standalone stylometric model. It operates purely on CPU, achieves $96.69\%$ test accuracy, and processes messages in approximately $39\text{ ms}$ without requiring PyTorch or transformer checkpoints.
+    \item \textbf{Dual-Branch Fusion Deployment:} Combining both representations provides a slightly higher multiclass ROC-AUC ($0.9970$ vs. $0.9968$) and retains both lexical $n$-gram distributions and contextual embeddings. If future datasets incorporate broader prompt diversity, multilingual mail, or multimodal inputs (such as OCR text from attachments) where surface stylometrics and semantics provide complementary signals, the dual-branch setup retains the capacity to incorporate both.
+\end{enumerate}
+To support these deployment options, the framework allows selecting the active mode via configuration files, command-line arguments, or API request parameters.
+
+\subsection{Generation Infrastructure, API Budget Constraints, and Hardware Scope}
+We summarize the operational and computational constraints governing our dataset generation and model evaluations below.
+
+\subsubsection{Inference API Selection and Safety Guardrails}
+For the primary training set, eight commercial LLMs were queried via the \textbf{Microsoft Azure AI Foundry API}: \texttt{gpt-5-mini}, \texttt{gpt-4o}, \texttt{claude-sonnet-5}, \texttt{Llama-4-Scout-17B-16E-Instruct}, \texttt{DeepSeek-V3.2}, \texttt{mistral-small-2503}, \texttt{grok-4.3}, and \texttt{Phi-4}. Azure AI Foundry provided a centralized API interface to manage generation requests across multiple model vendors.
+
+During this initial training generation phase, neither Google Gemini \cite{gemini2023team} nor the Alibaba Qwen series were available on the Azure Foundry deployment, and they were not included in the training corpus. For the subsequent zero-day generalization study (Section~\ref{sec:zero_day}), generation was conducted via \textbf{OpenRouter} to test models under a different provider, novel prompt schemas (Prompt V3.1), and disjoint seeds. We originally selected Google Gemini and Alibaba Qwen for this evaluation suite. However, when tasked with generating phishing lures, Google Gemini's safety filters consistently refused to synthesize deceptive emails despite the cybersecurity research context. To proceed with testing under unseen models, Gemini was replaced with \textbf{DeepSeek-V4} (a distinct architecture from the DeepSeek-V3.2 used during training), alongside \textbf{Alibaba Qwen-3 (30B)}. This experience illustrates a practical hurdle in synthetic security research: commercial model safety guardrails often restrict adversarial data generation, requiring alternative model selections.
+
+\subsubsection{Data Diversity and Generation Budget}
+Generating $32{,}000$ synthetic emails across eight LLMs was constrained by API costs and generation time. The zero-day evaluation results ($67.80\%$ overall recall and $46.37\%$ on linkless conversational phishing) reflect these data limitations. The training set relied on variations of a single core scenario prompt. When evaluated against conversational pretexts generated under different prompt structures, the model struggled to identify malicious intent without explicit links. Expanding future training data across a wider variety of prompt templates, multi-turn conversational formats, and additional model families (such as LLaMA-3 or Mistral NeMo) is an essential step to address this generalization gap.
+
+\subsubsection{Hardware Boundaries and Architectural Scope}
+All model fine-tuning, embedding extraction, and multi-classifier benchmark experiments were conducted on a single consumer laptop equipped with an AMD Ryzen 7 4800H CPU (8 cores, 16 threads), $20\text{ GB}$ DDR4 RAM, and an NVIDIA GeForce GTX 1660 Ti with Max-Q Design ($6\text{ GB}$ GDDR6 VRAM, CUDA 12.4). These hardware limits guided our model selection: DeBERTa-v3-small ($44\text{M}$ backbone + $\sim$$98\text{M}$ embedding parameters) was chosen because it could be fine-tuned locally within the $6\text{ GB}$ VRAM ceiling using FP16 mixed precision and gradient checkpointing, while achieving a per-sample GPU inference time of $26.7\text{ ms}$. Evaluating larger transformer backbones (such as DeBERTa-v3-large or multi-billion parameter models) was beyond our local compute capacity.
+
+\subsection{Adversarial Robustness and Multimodal Attack Vectors}
+While Anti-PLUTO demonstrates effective detection on text-based phishing in these benchmarks, attackers may adapt their techniques through adversarial perturbation \cite{morris2020textattack}:
+\begin{itemize}
+    \item \textbf{Stylistic Perturbation:} Attackers could attempt to prompt LLMs to introduce deliberate syntactic irregularities to mimic human writing habits. Whether such perturbations can evade semantic and stylometric detection without reducing the persuasiveness of the social engineering lure remains an open question for future empirical study.
+    \item \textbf{Multimodal Image and PDF Phishing:} Attackers increasingly place phishing text inside embedded images or PDF attachments (e.g., invoices with embedded QR codes), bypassing text-only parsers. Extending the ingestion engine with optical character recognition (OCR) and multimodal vision models is an important direction for future work.
+\end{itemize}
+
+\subsection{Ethics, Broader Impact, and Dual-Use Considerations}
+\label{sec:ethics}
+Because this investigation involves generating realistic social engineering communications using commercial and open-weight large language models, we explicitly address the ethical parameters and dual-use implications of our methodology:
+\begin{enumerate}
+    \item \textbf{Defensive Objective:} The generation of synthetic phishing lures was conducted strictly to evaluate vulnerabilities in existing content-filtering heuristics and to train robust automated defense mechanisms capable of protecting enterprise communication channels.
+    \item \textbf{Generation Containment:} Generation was orchestrated through controlled research scripts using external model APIs, and generated outputs were retained within the research workflow rather than deployed to live mail systems or users.
+    \item \textbf{Absence of Malicious Infrastructure:} Synthetic attack templates contained no functional credential harvesting infrastructure, malicious command-and-control backends, or weaponized payloads. All embedded hyperlinks directed strictly to standard RFC 2606 neutral placeholder domains (\texttt{example.com}).
+    \item \textbf{Human Protection:} The study did not recruit, interact with, or experimentally expose human participants to generated phishing messages, nor were messages deployed against live users or production mail systems.
+    \item \textbf{Privacy and PII Sanitization:} Preprocessing incorporated automated multi-stage named entity recognition and regular expression masking to sanitize personal names, corporate identifiers, phone numbers, and operational server names from historical seed records prior to classifier training and evaluation.
+    \item \textbf{Dual-Use Considerations and Scoped Artifact Release:} Prompt templates capable of generating realistic phishing communications present inherent dual-use considerations. To balance academic reproducibility against foreseeable misuse, code, trained classifier weights, preprocessing modules, and evaluation harnesses supporting defensive verification are intended for release under a research-use license, while generation workflows are documented with responsible containment safeguards.
+\end{enumerate}
+
+
+% ==============================================================================
+% SECTION X: CONCLUSION
+% ==============================================================================
+\section{Conclusion and Future Work}
+\label{sec:conclusion}
+
+This research has conceptualized, implemented, evaluated, and is intended for release under a research-use license as \textbf{Anti-PLUTO} (\textbf{Anti-P}hishing \textbf{L}exical \textbf{U}tilities and \textbf{T}hreat \textbf{O}bservation), an applied research framework designed to detect human and LLM-generated phishing attacks while attributing authorial provenance. By combining an automated 5-stage lexical ingestion pipeline with a dual-branch feature space uniting $100{,}000$-dimensional stylometric n-grams with $768$-dimensional DeBERTa-v3 semantic embeddings, Anti-PLUTO provides a content-focused framework to complement rule-based filtering when external network reputation signals are unavailable.
+
+Across an unseen test corpus of $6{,}400$ emails balanced across four cohorts, Anti-PLUTO achieved an overall accuracy of $\mathbf{98.42\%}$, a multiclass ROC-AUC of $\mathbf{0.9970}$, a phishing recall of $\mathbf{98.94\%}$, a recall of $\mathbf{99.38\%}$ on synthetic generative phishing across all four evaluated classifier paradigms, a within-corpus AI vs. Human provenance attribution accuracy of $\mathbf{99.34\%}$ (subject to the multi-era historical versus contemporary data dynamics documented in Section~\ref{sec:results}), and a controlled false positive rate of $\mathbf{0.81\%}$. Through feature ablation, sample-level error analysis, and threshold sweeps, we found that dense contextual embeddings drive most of the predictive performance ($98.42\%$ independently), while stylometrics provides a localized regularizing effect whose false-positive reduction can be matched by adjusting the decision threshold ($\tau = 0.54$) on semantics alone. In offline evaluations against Apache SpamAssassin and Rspamd on standardized RFC 5322 MIME messages without network reputation feeds, static heuristic rules caught less than $1.2\%$ of attacks, whereas Anti-PLUTO detected $99.38\%$ of generative threats. Our threshold analysis indicated that increasing the decision cutoff to $\tau = 0.65$ reduces false positives by $53.8\%$ with minimal impact on catch rates. To accommodate different deployment requirements, the framework provides selectable representation modes (Semantic-Only for lower memory and faster execution, Stylometric-Only for CPU-only environments, and Dual-Branch Fusion when combining both features is preferred).
+
+An independent zero-day evaluation across $2{,}000$ contemporary emails synthesized by two held-out LLMs (Alibaba Qwen-3 30B (\texttt{qwen/qwen-3-30b-instruct}) and DeepSeek-V4 (\texttt{deepseek/deepseek-v4-chat})) demonstrated good generalization for synthetic provenance detection ($93.95\%$) and actionable linked attacks ($95.63\%$). However, performance dropped on linkless conversational fraud ($46.37\%$), lowering overall zero-day phishing recall to $67.80\%$. Analysis of errors showed that this is consistent with limitations in training-data diversity: missed attacks were identified as machine-generated but lacked overt threat heuristics, causing them to be classified as benign LLM text.
+
+A key methodological contribution is the prompt evolution from a rigid v1 phishing generation prompt (inducing mode collapse with $54.2\%$ urgency keyword overrepresentation, $8.3\times$ the human baseline) to a scenario-faithful v2 prompt (reducing this to $15.2\%$, $-72\%$ reduction). That all four classifier paradigms maintained the same $99.38\%$ LLM phishing recall on the v2 corpus indicates that the underlying feature space captures informative structural characteristics of machine generation and social engineering and suggests performance is not solely attributable to superficial urgency-keyword frequency.
+
+\textbf{Future Work:} Subsequent research will expand Anti-PLUTO along four trajectories: (1) Constructing standardized contemporary evaluation benchmarks. We identify a three-tier roadmap for future data collection: (a) Primary: collecting authentic contemporary human enterprise correspondence through privacy-preserving enterprise contribution programs using rigorous de-identification, access-controlled data-use agreements, and, where appropriate, formal privacy mechanisms such as differential privacy; (b) Alternative: curating contemporary professional communications from public, active technical and administrative community mailing lists where licensing, terms of use, and ethical data-governance requirements permit; and (c) Auxiliary: designing controlled human-authored benchmark writing tasks to evaluate stylistic nuances. We emphasize that while auxiliary writing tasks provide valuable robustness checks, resolving the temporal confound fundamentally requires authentic contemporary human correspondence; (2) Expanding training data diversity across broader prompt templates, multi-turn conversational dialogue formats, and additional model families to improve generalization on linkless conversational phishing; (3) Integrating multimodal OCR and vision transformers to analyze text rendered inside embedded images, PDF attachments, and QR codes; and (4) Implementing real-time active learning buffers and tenant-level adapter fine-tuning to mitigate temporal concept drift on automated transactional communications (OTP codes, banking statements, SaaS receipts).
+
+
+% ==============================================================================
+% REFERENCES
+% ==============================================================================
+\balance
+\bibliographystyle{IEEEtran}
+\bibliography{refs}
+
+\end{document}

@@ -1,0 +1,14 @@
+# Ignore virtual environment
+/.venv
+# Ignore Python cache files
+__pycache__/
+*.pyc
+
+# Ignore environment variables/config
+.env
+antipluto/configs/default.yaml
+
+# Build & packaging artifacts
+dist/
+build/
+*.egg-info/
