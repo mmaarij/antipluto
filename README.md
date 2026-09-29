@@ -1,5 +1,5 @@
 <div align="center">
-  <img src="antipluto.svg" alt="Anti-PLUTO Logo" width="120" />
+  <img src="https://raw.githubusercontent.com/mmaarij/antipluto/main/antipluto.svg" alt="Anti-PLUTO Logo" width="120" />
   <h1>Anti-PLUTO</h1>
   <p><strong>Anti-Phishing Lexical Utilities and Threat Observation</strong></p>
   <p>
