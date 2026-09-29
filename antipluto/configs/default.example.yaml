@@ -1,0 +1,288 @@
+# ============================================================
+#  Anti-PLUTO Framework — Default Configuration
+# ============================================================
+#
+# All relative paths are resolved against `project_root`.
+# Override any value via a custom YAML passed to --config.
+
+# Absolute path to the root of the thesis project.
+project_root: "."
+
+datasets:
+  # Root folder containing raw source archives.
+  raw_dir: "datasets/datasets_raw"
+
+  # Output directory for processed JSONL files.
+  output_dir: "datasets/datasets_preprocessed"
+
+  # Exactly two consolidated output files.
+  # All sources with label=0 stream into benign; label=1 into phishing.
+  output_files:
+    benign: "human_written_benign.jsonl"
+    phishing: "human_written_phishing.jsonl"
+
+sources:
+  enron:
+    enabled: true
+    # Path relative to raw_dir — points to the top-level maildir.
+    path: "enron/enron_mail_20150507/maildir"
+
+  nazario:
+    enabled: true
+    # Path relative to raw_dir — directory containing all .mbox files.
+    path: "nazario"
+
+  spamassassin:
+    enabled: true
+    # Path relative to raw_dir — root of the extracted SpamAssassin corpus.
+    # Expected subdirectory layout: <archive_dir>/(spam|easy_ham|hard_ham)/<files>
+    path: "spamassasin"
+
+  trec07:
+    enabled: true
+    # Path relative to raw_dir — root of the extracted trec07p corpus.
+    # Expected layout: trec07p/data/inmail.N + trec07p/full/index
+    path: "trec07p"
+
+  nigerian_fraud:
+    enabled: true
+    # Path relative to raw_dir — the CLAIR mbox file (note: filename typo is intentional).
+    path: "nigerian_fraud/fradulent_emails.txt"
+
+processing:
+  # Export mode for dataset feature schema:
+  # - "full": Exports all 20 MeAJOR Table II features
+  # - "minimal": Exports core NLP fields: [subject, body, label, source]
+  # - "custom": Exports only the fields explicitly listed under custom_fields
+  mode: "full"
+
+  # Active when mode is set to "custom".
+  # You can pick any combination of the 20 available fields listed below:
+  #
+  #  --- Metadata & Provenance ---
+  #  - source            : Original dataset provenance tag ("enron", "nazario", "spamassassin", "trec07", "nigerian_fraud")
+  #  - sender            : SHA-256 hash of sender email address
+  #  - sender_domain     : Email domain of the sender (e.g., "enron.com")
+  #  - receiver          : SHA-256 hash of primary receiver email address
+  #  - receiver_domain   : Email domain of the receiver
+  #  - date              : RFC 2822 or ISO timestamp string from Date: header
+  #  - label             : Ground-truth binary label (0 = benign, 1 = phishing)
+  #
+  #  --- Text & Content ---
+  #  - subject           : Cleaned & normalized email subject line
+  #  - body              : Cleaned, thread-sliced plain-text body
+  #  - content_types     : List of MIME content types present (e.g. ["text/plain", "text/html"])
+  #  - language          : Detected body language code (e.g. "en")
+  #
+  #  --- URL Statistics ---
+  #  - urls              : List of extracted unique URLs
+  #  - url_count         : Total number of extracted URLs
+  #  - url_length_max    : Maximum URL length
+  #  - url_length_avg    : Average URL length
+  #  - url_subdom_max    : Maximum subdomain count across URLs
+  #  - url_subdom_avg    : Average subdomain count across URLs
+  #
+  #  --- Attachment Statistics ---
+  #  - attachment_count  : Total number of attachments present
+  #  - has_attachments   : 1 if attachments are present, 0 otherwise
+  #  - attachment_types  : List of MIME types or extensions of attachments
+  custom_fields:
+    - subject
+    - body
+    - label
+    - source
+    - urls
+    - url_count
+    - language
+
+  # Number of file paths per parallel worker chunk.
+  # Tune higher (e.g. 2000) on machines with many cores and fast I/O.
+  chunk_size: 1000
+
+  # Maximum parallel worker processes.
+  # null → os.cpu_count() (recommended for throughput on the Enron corpus).
+  max_workers: null
+
+  # Records whose cleaned body is shorter than this threshold are discarded.
+  min_body_length: 50
+
+masking:
+  # Controls PII masking when running the full ingestion pipeline (preprocess command).
+  # Set to true only if you want masking applied inline during ingestion.
+  #
+  # RECOMMENDED WORKFLOW:
+  #   1. Run pipeline with enabled=false (default) to generate raw JSONL cohorts.
+  #   2. Generate LLM-assisted and LLM-generated cohorts via: antipluto generate
+  #   3. Apply masking uniformly across all cohorts using the standalone mask command:
+  #
+  #      antipluto mask --input datasets/datasets_preprocessed/
+  #      antipluto mask --input datasets/llm_cohorts/ --output-dir datasets/datasets_masked/
+  #
+  #   The mask command works on any JSONL file regardless of source field,
+  #   including LLM-generated files. Output goes to datasets/datasets_masked/.
+  enabled: false
+
+  # spaCy model used for NER-based Stage 1 masking.
+  # en_core_web_sm : fast, lower recall (default)
+  # en_core_web_lg : larger, better entity recall
+  # en_core_web_trf: transformer-based, best accuracy, slowest
+  spacy_model: "en_core_web_sm"
+
+  # MeAJOR-compatible token set applied by the masker:
+  # [PGP], [EMOJI], [SYMBOL], [NAME], [USERNAME], [INITIALS],
+  # [EMAIL_ADDRESS], [PHONE_NUMBER], [ADDRESS], [ORGANIZATION],
+  # [URL], [IP_ADDRESS], [FILE_PATH], [FILE_NAME], [FILE],
+  # [DATE], [TIME], [FINANCIAL_INFO], [PRODUCT], [REFERENCE_NUMBER]
+
+# ============================================================
+#  LLM Cohort Generation
+# ============================================================
+generation:
+  # ---------------------------------------------------------------------------
+  # Provider Configuration
+  # ---------------------------------------------------------------------------
+  # Each provider backend has its own endpoint and authentication.
+  # API key resolution order: CLI --api-key > api_key here > env var from api_key_env.
+  #
+  # Built-in providers:
+  #   "openai"     — OpenAI-compatible APIs (Azure AI Foundry, OpenRouter, direct OpenAI)
+  #   "anthropic"  — Anthropic Messages API (Claude via Azure AI Foundry)
+  #
+  # Custom providers can be registered at runtime via:
+  #   antipluto.generation.client.register_provider("my_provider", MyClientClass)
+  providers:
+    openrouter:
+      endpoint: "https://openrouter.ai/api/v1"
+      api_key: "your_api_key_here"
+      api_key_env: "OPENROUTER_API_KEY"
+    openai:
+      endpoint: "https://gw-softdev-resource.services.ai.azure.com/openai/v1"
+      api_key: "your_api_key_here"
+      api_key_env: "FOUNDRY_API_KEY"
+    anthropic:
+      endpoint: "https://gw-softdev-resource.services.ai.azure.com/anthropic"
+      api_key: "your_api_key_here"
+      api_key_env: "ANTHROPIC_API_KEY"
+
+  # ---------------------------------------------------------------------------
+  # Model Selection
+  # ---------------------------------------------------------------------------
+  # Zero-Day Cross-Model Evaluation Ensemble (Unseen Frontier Models):
+  models:
+    - name: "qwen/qwen3-30b-a3b-instruct-2507"
+      provider: "openrouter"
+    - name: "deepseek/deepseek-v4-flash"
+      provider: "openrouter"
+    # Legacy Azure 8-model training ensemble (archived):
+    # - name: "gpt-5-mini"
+    #   provider: "openai"
+    # - name: "gpt-4o"
+    #   provider: "openai"
+    # - name: "claude-sonnet-5"
+    #   provider: "anthropic"
+    # - name: "Llama-4-Scout-17B-16E-Instruct"
+    #   provider: "openai"
+    # - name: "DeepSeek-V3.2"
+    #   provider: "openai"
+    # - name: "mistral-small-2503"
+    #   provider: "openai"
+    # - name: "grok-4.3"
+    #   provider: "openai"
+    # - name: "Phi-4"
+    #   provider: "openai"
+
+  # Total number of emails to generate PER COHORT.
+  # Divided evenly across all active models (2 models × 500 = 1000 per cohort).
+  # 1000 benign + 1000 phishing = 2000 total zero-day evaluation emails.
+  n_samples: 1000
+
+  # Prompt version: "v3" selects zero-day adversarial pretexting & contemporary corporate prompts.
+  prompt_version: "v3"
+
+  # Number of emails to request per API call.
+  # Recommended range: 5–10 for OpenRouter.
+  batch_size: 10
+
+  # Only sample seed emails whose detected language matches this code.
+  # "en" = English only. Set to null to disable language filtering.
+  language_filter: "en"
+
+  # Output directory for generated JSONL cohort files (relative to project_root).
+  # Set to a dedicated zero-day evaluation folder to preserve existing datasets.
+  output_dir: "datasets/datasets_zero_day"
+
+  # Output filenames for each cohort.
+  output_files:
+    benign: "zero_day_benign.jsonl"
+    phishing: "zero_day_phishing.jsonl"
+
+  # Seed dataset paths to draw email seeds from (relative to project_root).
+  seed_files:
+    benign: "datasets/datasets_preprocessed/human_written_benign.jsonl"
+    phishing: "datasets/datasets_preprocessed/human_written_phishing.jsonl"
+
+  # Independent random seed ensuring zero seed overlap with the 8-model training set.
+  random_seed: 2026
+
+  # Buffer ratio for sampling extra candidate seeds (e.g. 0.50 = 50% extra buffer).
+  buffer_ratio: 0.5
+
+  # HTTP request timeout in seconds.
+  request_timeout: 120
+
+  # Maximum number of retry attempts per failed API call.
+  max_retries: 3
+
+  # Delay in seconds between retry attempts (exponential backoff applied).
+  retry_delay: 5
+
+  # Maximum tokens to allow in the LLM response.
+  # Each email body averages ~300 tokens; 10 emails/batch → ~3500 tokens plus overhead.
+  max_tokens: 4096
+
+  # Temperature for generation.
+  # GPT-5 and o-series models only support the default value (1.0).
+  # For models that accept custom temperature (Llama, Mistral, Claude etc.),
+  # override via CLI: --temperature 0.8
+  temperature: 1.0
+
+# ---------------------------------------------------------------------------
+# Classifier Configuration (Dual-Branch Stylometric + Semantic)
+# ---------------------------------------------------------------------------
+classifier:
+  data_dir: "datasets/datasets_masked"
+  output_dir: "models"
+  samples_per_cohort: 16000     # Equal balanced sampling: 16,000 per cohort (64,000 total)
+  train_ratio: 0.8              # 80% train (51,200)
+  val_ratio: 0.1                # 10% validation (6,400)
+  test_ratio: 0.1               # 10% test (6,400)
+  seed: 42
+
+  stylometric:
+    word_ngram_range: [1, 2]
+    word_max_features: 50000
+    char_ngram_range: [3, 5]
+    char_max_features: 50000
+    sublinear_tf: true
+    preserve_casing: true
+
+  semantic:
+    model_name: "microsoft/deberta-v3-small"
+    num_labels: 4
+    max_seq_len: 512
+    epochs: 3
+    batch_size: 16
+    learning_rate: 0.00002
+    fp16: true
+    warmup_ratio: 0.1
+    weight_decay: 0.01
+
+  fusion:
+    n_estimators: 500
+    learning_rate: 0.08
+    max_depth: 6
+    subsample: 0.8
+    colsample_bytree: 0.8
+    early_stopping_rounds: 30
+    device: "cpu"
+

@@ -1,0 +1,66 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "antipluto"
+version = "1.0.0"
+description = "A unified framework for email preprocessing, PII masking, LLM cohort generation, and dual-branch semantic-stylometric phishing classification."
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "CC BY-NC 4.0" }
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "License :: Free for non-commercial use",
+    "Operating System :: OS Independent",
+    "Intended Audience :: Science/Research",
+    "Topic :: Security",
+]
+dependencies = [
+    "click>=8.0",
+    "pydantic>=2.0",
+    "PyYAML>=6.0",
+    "beautifulsoup4>=4.12",
+    "spacy>=3.7",
+    "langdetect>=1.0.9",
+    "openai>=1.0",
+    "anthropic>=0.30",
+    "pandas>=2.0",
+]
+
+[project.optional-dependencies]
+classifier = [
+    "scikit-learn>=1.4",
+    "scipy>=1.12",
+    "xgboost>=2.0",
+    "accelerate>=0.30",
+    "datasets>=2.0",
+    "sentencepiece>=0.2.0",
+    "tiktoken>=0.7.0",
+    "onnx>=1.16",
+    "onnxruntime>=1.18",
+    "onnxscript>=0.1.0",
+    "skl2onnx>=1.17",
+    "onnxmltools>=1.12",
+    "optimum>=1.20",
+    "matplotlib>=3.8",
+]
+api = [
+    "fastapi>=0.110.0",
+    "uvicorn[standard]>=0.28.0",
+    "python-multipart>=0.0.9",
+]
+dev = [
+    "dvc[gdrive]",
+    "spacy-transformers>=1.3",
+]
+
+[project.scripts]
+antipluto = "antipluto.__main__:cli"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["antipluto*"]
+
+[tool.setuptools.package-data]
+"antipluto.configs" = ["*.yaml"]
