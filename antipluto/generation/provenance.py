@@ -122,9 +122,16 @@ class ProvenanceTracer:
         self._seed_cache[cohort] = seeds
         return seeds
 
-    def _get_model_pool(self, cohort: str, model: str) -> list[dict]:
-        """Deterministically reconstruct the candidate seed pool for a model."""
-        cache_key = (cohort, model)
+    def _get_model_pool(
+        self, cohort: str, model: str, random_seed: int | None = None
+    ) -> list[dict]:
+        """Deterministically reconstruct the candidate seed pool for a model.
+
+        ``random_seed`` overrides the configured base seed (taken from the
+        record's own ``random_seed`` field when available).
+        """
+        base_seed = self.random_seed if random_seed is None else random_seed
+        cache_key = (cohort, model, base_seed)
         if cache_key in self._pool_cache:
             return self._pool_cache[cache_key]
 
@@ -137,7 +144,7 @@ class ProvenanceTracer:
         pool_size = int(target_quota * (1.0 + self.buffer_ratio))
 
         model_hash = int(hashlib.md5(model.encode("utf-8")).hexdigest(), 16) % 10000
-        rng = random.Random(self.random_seed + model_hash)
+        rng = random.Random(base_seed + model_hash)
         pool = rng.choices(seeds, k=pool_size)
 
         self._pool_cache[cache_key] = pool
@@ -194,7 +201,10 @@ class ProvenanceTracer:
         label = rec.get("label", 0)
         cohort = "benign" if label == 0 else "phishing"
 
-        pool = self._get_model_pool(cohort=cohort, model=source)
+        rec_seed = rec.get("random_seed")
+        if not isinstance(rec_seed, int):
+            rec_seed = None
+        pool = self._get_model_pool(cohort=cohort, model=source, random_seed=rec_seed)
 
         if seed_idx < 0 or seed_idx >= len(pool):
             raise IndexError(

@@ -557,6 +557,7 @@ class CohortGenerator:
         record_data = {
             "source": model,
             "seed_idx": seed_idx,
+            "random_seed": self.random_seed,
             "subject": subject,
             "body": body,
             "label": label,
