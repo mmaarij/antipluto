@@ -92,6 +92,14 @@ class EmailRecord(BaseModel):
             "Enables exact one-to-one provenance tracing back to the human seed email."
         ),
     )
+    random_seed: int | None = Field(
+        default=None,
+        description=(
+            "Base RNG seed (``random_seed`` in the generation config) used together with "
+            "the model name (MD5 hash) to reconstruct the seed pool that ``seed_idx`` "
+            "indexes into. Makes the provenance trace self-contained."
+        ),
+    )
 
     # --- MeAJOR Table II Metadata & Network Features ---
     sender: str = Field(default="", description="SHA-256 hash of sender email address.")

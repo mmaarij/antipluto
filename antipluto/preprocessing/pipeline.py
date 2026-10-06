@@ -297,7 +297,7 @@ class PreprocessingPipeline:
             # Export filtering according to active_mode
             record_dict = {
                 k: v for k, v in record.model_dump().items()
-                if k != "seed_idx" or v is not None
+                if k not in ("seed_idx", "random_seed") or v is not None
             }
             if active_mode == "minimal":
                 minimal_keys = {"subject", "body", "label", "source"}
