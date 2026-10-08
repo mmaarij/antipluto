@@ -7,7 +7,7 @@
   </p>
   <p>
     <a href="https://github.com/mmaarij/antipluto/blob/main/LICENSE">
-      <img src="https://img.shields.io/badge/License-CC%20BY--NC%204.0-mistyrose.svg" alt="License: CC BY-NC 4.0" />
+      <img src="https://img.shields.io/badge/License-Apache%202.0-blue.svg" alt="License: Apache-2.0" />
     </a>
     <a href="https://python.org">
       <img src="https://img.shields.io/badge/Python-3.10%2B-lightblue" alt="Python 3.10+" />

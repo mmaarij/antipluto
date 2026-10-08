@@ -4,14 +4,14 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "antipluto"
-version = "1.1.0"
+version = "1.1.1"
 description = "A unified framework for email preprocessing, PII masking, LLM cohort generation, and dual-branch semantic-stylometric phishing classification."
 readme = "README.md"
 requires-python = ">=3.10"
-license = { text = "CC BY-NC 4.0" }
+license = { text = "Apache-2.0" }
 classifiers = [
     "Programming Language :: Python :: 3",
-    "License :: Free for non-commercial use",
+    "License :: OSI Approved :: Apache Software License",
     "Operating System :: OS Independent",
     "Intended Audience :: Science/Research",
     "Topic :: Security",
